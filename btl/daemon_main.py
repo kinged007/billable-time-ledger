@@ -6,10 +6,12 @@ Run with:  python -m btl.daemon_main --foreground
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import threading
 
 from btl import config as cfg
+from btl import ipc
 from btl.daemon import Daemon, capture_commits
 from btl.ipc import IpcServer
 
@@ -24,6 +26,8 @@ def handle_request(daemon: Daemon, req: dict) -> dict:
         return daemon.cmd_note_stop(req.get("watch"))
     if cmd == "session_stop":
         return daemon.cmd_session_stop(req.get("watch"))
+    if cmd == "restart":
+        return daemon.cmd_restart()
     if cmd == "shutdown":
         threading.Thread(target=daemon.stop, daemon=True).start()
         return {"ok": True, "shutting_down": True}
@@ -42,7 +46,11 @@ def main() -> int:
         return 1
 
     root = cfg.config_root()
-    ipc_server = IpcServer(root, lambda req: handle_request(daemon, req))
+    sock = ipc.socket_path(root, cfg.resolved_socket_path())
+    if os.geteuid() == 0 and sock == "/run/btl/btl.sock":
+        os.makedirs("/run/btl", exist_ok=True)
+    ipc_server = IpcServer(root, lambda req: handle_request(daemon, req),
+                           socket_path_str=sock)
     ipc_server.start()
     daemon.start()
     commits = threading.Thread(

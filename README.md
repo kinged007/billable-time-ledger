@@ -20,6 +20,7 @@ The operator bills client projects on a time & materials basis in half-day incre
 - **Agent-readable export** — `btl export --format json|md` — point any agent at it for narrative/invoice reports
 - **Multi-watch** — one daemon, many watches (one per project folder), each with its own config + logs
 - **Autostart** — systemd user service (Linux) / launchd (macOS), `btl autostart on|off`
+- **Process attribution** — Linux: `sudo btl setup-root` enables a root fanotify daemon that records *which process* made each change (hermes, cron, editor...). Cron/systemd-timer activity is detected and tagged `cron` — kept in the ledger but excluded from billable time by default (`actors.non_billable`)
 
 ## Install
 
@@ -57,8 +58,12 @@ btl export --since 2026-08-10 --until 2026-08-17 --format md
 idle_gap_min: 15
 exclude: [node_modules, .cache, __pycache__, .venv, .git]
 actors:
-  agents: [opencode, claude, codex, aider, gemini, cursor]
+  agents: [hermes, opencode, claude, codex, aider, gemini, cursor]
   humans: [code-server, vscode, code, node, python, bash, zsh, ssh]
+  system: [systemd, apt, rsync]
+  non_billable: [cron]
+  exclude: []
+process_tracking: true
 billing:
   day_hours: 8
   increment_hours: 4
@@ -91,6 +96,21 @@ btl config show | edit
 
 ## Development
 
+- venv: `.venv/bin/python`; package: `btl/`; entrypoints `btl` + `btl-daemon`
+- Tests: `python -m compileall btl && python /tmp/btl_test_02.py` (process attribution, no root needed)
+
+## Process attribution (Linux, optional)
+
+Without it, actor is `unknown` on every event (inotify/FSEvents expose no PID).
+With it, every event records `actor`, `proc`, `exe`, `unit`:
+
 ```bash
-.venv/bin/python -m btl.daemon_main --foreground   # run daemon in foreground
+sudo btl setup-root        # installs btl-root.service (system unit, fanotify, root)
+btl status                 # → backend=fanotify, process tracking ON
 ```
+
+The root daemon reads the same `~/.config/btl/` config (via `BTL_CONFIG_ROOT`),
+writes logs chowned to your uid (`BTL_LOG_OWNER`), and listens on
+`/run/btl/btl.sock` — your user CLI keeps working with **no sudo after setup**.
+`btl restart` reloads config through the unit. `sudo systemctl disable --now
+btl-root.service` reverts to the user daemon.

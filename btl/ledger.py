@@ -22,6 +22,15 @@ class Ledger:
         self._fh: Dict[str, IO[str]] = {}   # day -> open file handle
         self._lock = threading.Lock()
         self._count = 0
+        self._owner: tuple[int, int] | None = None
+        env = os.environ.get("BTL_LOG_OWNER", "")
+        if env and os.geteuid() == 0:
+            try:
+                uid, gid = (int(x) for x in env.split(":", 1))
+                self._owner = (uid, gid)
+                os.chown(self._dir, uid, gid)
+            except (ValueError, OSError):
+                self._owner = None
 
     def _day(self) -> str:
         return datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -31,7 +40,13 @@ class Ledger:
 
     def _open(self, day: str):
         if day not in self._fh:
-            self._fh[day] = open(self._path_for(day), "a", encoding="utf-8")
+            fh = open(self._path_for(day), "a", encoding="utf-8")
+            if self._owner:
+                try:
+                    os.fchown(fh.fileno(), self._owner[0], self._owner[1])
+                except OSError:
+                    pass
+            self._fh[day] = fh
         return self._fh[day]
 
     def append(self, **event: object) -> None:

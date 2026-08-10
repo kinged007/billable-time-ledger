@@ -13,16 +13,26 @@ import threading
 from pathlib import Path
 
 
-def socket_path(root) -> str:
+def socket_path(root, socket: str | None = None) -> str:
+    """Resolve the IPC socket path.
+
+    Explicit config wins; otherwise the root daemon (/run/btl/btl.sock,
+    user-accessible) vs user daemon (config_root/btl.sock).
+    """
+    if socket:
+        return socket
+    if os.geteuid() == 0:
+        return "/run/btl/btl.sock"
     return str(Path(root) / "btl.sock")
 
 
-def send_request(root, payload: dict, timeout: float = 3.0) -> dict:
+def send_request(root, payload: dict, timeout: float = 3.0,
+                 sock_path: str | None = None) -> dict:
     """Send one request to the daemon. Raises ConnectionError if not running."""
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(timeout)
     try:
-        sock.connect(socket_path(root))
+        sock.connect(socket_path(root, sock_path))
         sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
         buf = b""
         while not buf.endswith(b"\n"):
@@ -69,7 +79,7 @@ class IpcServer(threading.Thread):
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server.bind(path)
         server.listen(8)
-        os.chmod(path, 0o600)
+        os.chmod(path, 0o666 if os.geteuid() == 0 else 0o600)
         self._server = server
         while not self._stop.is_set():
             try:

@@ -27,8 +27,10 @@ DEFAULT_CONFIG_ROOT = "~/.config/btl"
 
 DEFAULT_IDLE_GAP_MIN = 15
 DEFAULT_EXCLUDES = ["node_modules", ".cache", "__pycache__", ".venv", ".git", ".hermes"]
-DEFAULT_AGENTS = ["opencode", "claude", "codex", "aider", "gemini", "cursor"]
-DEFAULT_HUMANS = ["code-server", "vscode", "code", "node", "python", "bash", "zsh", "ssh"]
+DEFAULT_AGENTS = ["hermes", "opencode", "claude", "codex", "aider", "gemini", "cursor"]
+DEFAULT_HUMANS = ["code-server", "vscode", "code", "node", "python", "bash", "zsh", "ssh", "nvim", "vim", "tmux"]
+DEFAULT_SYSTEM = ["systemd", "systemd-tmpfiles", "rsync", "apt", "dpkg", "snapd", "flatpak"]
+DEFAULT_NON_BILLABLE = ["cron"]
 DEFAULT_BILLING = {"day_hours": 8, "increment_hours": 4, "monthly_target_days": 10}
 
 
@@ -64,13 +66,38 @@ def load_global_config(root: Path | None = None) -> dict:
     cfg = {
         "idle_gap_min": DEFAULT_IDLE_GAP_MIN,
         "exclude": list(DEFAULT_EXCLUDES),
-        "actors": {"agents": list(DEFAULT_AGENTS), "humans": list(DEFAULT_HUMANS)},
+        "process_tracking": True,
+        "actors": {
+            "agents": list(DEFAULT_AGENTS),
+            "humans": list(DEFAULT_HUMANS),
+            "system": list(DEFAULT_SYSTEM),
+            "non_billable": list(DEFAULT_NON_BILLABLE),
+            "exclude": [],
+        },
         "billing": dict(DEFAULT_BILLING),
         "autostart": True,
         "log_dir": None,  # default: co-located per-watch logs/
         "report_dir": None,
+        "socket_path": None,  # default: user daemon = config_root/btl.sock, root = /run/btl/btl.sock
     }
     return _deep_merge(cfg, _load_yaml(root / "btl.yaml"))
+
+
+def resolved_socket_path(root: Path | None = None) -> str | None:
+    """Explicit socket path from config, or None for the per-mode default."""
+    root = root or config_root()
+    g = load_global_config(root)
+    v = g.get("socket_path")
+    if not v:
+        return None
+    return str(Path(v).expanduser().resolve())
+
+
+def non_billable_actors(root: Path | None = None) -> set[str]:
+    """Actor names whose sessions don't count as billable (e.g. cron)."""
+    root = root or config_root()
+    g = load_global_config(root)
+    return set(g.get("actors", {}).get("non_billable", []) or [])
 
 
 def discover_watches(root: Path | None = None) -> list[str]:
@@ -143,6 +170,7 @@ exclude:
   - .hermes
 actors:
   agents:
+    - hermes
     - opencode
     - claude
     - codex
@@ -158,6 +186,25 @@ actors:
     - bash
     - zsh
     - ssh
+    - nvim
+    - vim
+    - tmux
+  system:
+    - systemd
+    - systemd-tmpfiles
+    - rsync
+    - apt
+    - dpkg
+    - snapd
+    - flatpak
+  # actors whose sessions are excluded from billable time (still logged)
+  non_billable:
+    - cron
+  # actors dropped from the ledger entirely (e.g. cron if you never want it)
+  exclude: []
+# process attribution (Linux fanotify, requires root daemon via
+# 'btl setup-root'; inotify/FSEvents always report actor "unknown")
+process_tracking: true
 billing:
   day_hours: 8
   increment_hours: 4
@@ -165,6 +212,7 @@ billing:
 autostart: true
 # log_dir: "~/.local/share/btl/logs"   # default: co-located per-watch logs/
 # report_dir: "~/.local/share/btl/reports"
+# socket_path: "/run/btl/btl.sock"     # default: config_root/btl.sock (user), /run/btl/btl.sock (root)
 """
 
 

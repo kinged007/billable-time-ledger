@@ -88,41 +88,43 @@ The SOW bills in **half-day increments** (8-hour day, ~10 days/month target). To
 - **FR-14** — Commit messages enrich the ledger so reports can explain *why* changes were made — **on by default** per root
 - **FR-15** — Git tracking is configurable per root (default: on)
 
-### F5 — Actor classification (reference only)
+### F5 — Actor classification / process attribution
 
-- **FR-16** — Each event optionally labeled: `human` | `agent` | `other` | `unknown`
-- **FR-17** — Classification based on configurable process-name patterns; ships with defaults for common agents (opencode, claude, codex) and editors (code-server, vscode, terminal) — **not hard-coded**: users can add/remove patterns; unrecognized processes are recorded as `other`/`unknown`, never dropped
-- **FR-18** — Classification never gates recording (fail-open by design)
-- **FR-19** — On platforms without process attribution (macOS FSEvents), actor is `unknown` — ledger still complete
+- **FR-16** — Each file event labeled with a concrete actor: matched process name (e.g. `hermes`, `cron`, `code`) or category fallback (`human`, `system`, `other`, `unknown`); the raw process name (comm), executable basename and systemd unit are stored alongside
+- **FR-17** — **Linux (root, fanotify)**: the backend reports the PID of the writing process; /proc is read at event time (comm, exe, cmdline, ppid chain, cgroup) and classified. Setup: `sudo btl setup-root` (installs `btl-root.service`, system unit; socket moves to `/run/btl/btl.sock`; log files chowned to the user)
+- **FR-18** — **Cron / systemd-timer detection**: ancestor chain (cron/crond/atd) or a `*.timer` cgroup unit ⇒ actor `cron`. Config decides: `actors.non_billable: [cron]` keeps cron in the ledger but excludes its sessions from billable time; `actors.exclude: [cron]` drops it entirely
+- **FR-19** — Classification never gates recording (fail-open by design); on platforms/backends without PID (macOS FSEvents, Linux inotify, non-root), actor is `unknown` — ledger still complete
+- **FR-20** — Patterns are configurable and ship with defaults: agents (hermes, opencode, claude, codex, aider, gemini, cursor — matched on comm OR cmdline), humans (editors/terminals — matched on comm), system (systemd, apt, rsync…)
+- **FR-21** — Session billing respects actors: a session whose file events are **all** non-billable actors (e.g. a cron-only block) is marked non-billable; reports show `Non-billable` totals and a `By actor` breakdown
 
 ### F6 — Working notes
 
-- **FR-20** — `btl note "working on X"` attaches a working note to the **current session**; if no session is active, it starts one with the note as its label
-- **FR-21** — **Idle-gap auto-stop**: when the idle gap elapses (user no longer active), the session — and its note — ends; the note never bleeds into later sessions/logs
-- **FR-22** — `btl note stop` (alias `btl note end`) explicitly ends the current note/session
-- **FR-23** — Notes recorded as timestamped events in the ledger; carried into sessions, reports and exports
-- **FR-24** — `btl notes --day ...` lists notes for a window
+- **FR-22** — `btl note "working on X"` attaches a working note to the **current session**; if no session is active, it starts one with the note as its label
+- **FR-23** — **Idle-gap auto-stop**: when the idle gap elapses (user no longer active), the session — and its note — ends; the note never bleeds into later sessions/logs
+- **FR-24** — `btl note stop` (alias `btl note end`) explicitly ends the current note/session
+- **FR-25** — Notes recorded as timestamped events in the ledger; carried into sessions, reports and exports
+- **FR-26** — `btl notes --day ...` lists notes for a window
 
 ### F7 — Reporting & agent-readability
 
-- **FR-25** — Daily report (markdown): sessions, total active time, files touched, per-project totals, git commits, notes
-- **FR-26** — Monthly report: per-day totals, per-project totals, days worked vs SOW day target, half-day unit counts
-- **FR-27** — CLI: `btl status`, `btl report --day 2026-08-10`, `btl report --month 2026-08`
-- **FR-28** — **Agent-readable export**: stable, complete export (JSON or markdown digest) of the ledger for a given window — designed so an agent (Hermes, OpenCode, Claude) can be pointed at it to produce a narrative/invoice-ready report
+- **FR-27** — Daily report (markdown): sessions, total active time, files touched, per-project totals, git commits, notes, **by-actor breakdown**
+- **FR-28** — Monthly report: per-day totals, per-project totals, days worked vs SOW day target, half-day unit counts, non-billable (cron/system) total, by-actor breakdown
+- **FR-29** — CLI: `btl status`, `btl report --day 2026-08-10`, `btl report --month 2026-08`
+- **FR-30** — **Agent-readable export**: stable, complete export (JSON or markdown digest) of the ledger for a given window — designed so an agent (Hermes, OpenCode, Claude) can be pointed at it to produce a narrative/invoice-ready report; sessions carry a `billable` flag
 
 ### F8 — Autostart
 
-- **FR-29** — Starts on system startup by default
-- **FR-30** — **Configurable**: `btl autostart on|off`; Linux → systemd user service, macOS → launchd agent
-- **FR-31** — Daemon self-heals (restart on crash via service manager)
+- **FR-31** — Starts on system startup by default
+- **FR-32** — **Configurable**: `btl autostart on|off`; Linux → systemd user service, macOS → launchd agent; root fanotify mode → system unit `btl-root.service` (installed by `btl setup-root`)
+- **FR-33** — Daemon self-heals (restart on crash via service manager); `btl restart` reloads config through the unit
 
 ### F9 — Configuration (system-decoupled)
 
-- **FR-32** — Single YAML config at XDG location (`~/.config/btl/config.yaml`; macOS same convention)
-- **FR-33** — Config is **not** tied to any repository — lives on the system, editable anytime
-- **FR-34** — Env override: `BTL_CONFIG` for alternate config path
-- **FR-35** — `btl config` prints effective config (defaults + overrides)
-- **FR-36** — All settings configurable: watch roots, excludes, idle gap, agent patterns, billing params, log/output dirs
+- **FR-34** — Single YAML config at XDG location (`~/.config/btl/btl.yaml`; macOS same convention)
+- **FR-35** — Config is **not** tied to any repository — lives on the system, editable anytime
+- **FR-36** — Env overrides: `BTL_CONFIG_ROOT` (config root), `BTL_LOG_OWNER` (root daemon: chown new log files to `uid:gid`), `BTL_CONFIG` (alternate config path)
+- **FR-37** — `btl config` prints effective config (defaults + overrides)
+- **FR-38** — All settings configurable: watch roots, excludes, idle gap, agent/system patterns, non-billable & excluded actors, process tracking on/off, billing params, log/output dirs, socket path
 
 ## 7. Non-Functional Requirements
 
@@ -137,8 +139,9 @@ The SOW bills in **half-day increments** (8-hour day, ~10 days/month target). To
 Per-day log file, JSONL, one event per line:
 
 ```json
-{"ts": "2026-08-10T14:23:05Z", "pid": 1234, "proc": "opencode", "actor": "agent", "event": "WRITE", "path": "/home/user/workspace/project/src/scraper.py"}
-{"ts": "2026-08-10T14:24:11Z", "proc": "code-server", "actor": "human", "event": "WRITE", "path": "/home/user/workspace/project/src/utils.py"}
+{"ts": "2026-08-10T14:23:05Z", "type": "file", "event": "MODIFIED", "path": "project/src/scraper.py", "actor": "hermes", "proc": "hermes", "exe": "hermes", "unit": "hermes-gateway.service", "watch": "home", "project": "home"}
+{"ts": "2026-08-10T14:24:11Z", "type": "file", "event": "MODIFIED", "path": "project/src/utils.py", "actor": "code", "proc": "code", "exe": "code", "unit": "session-3.scope", "watch": "home", "project": "home"}
+{"ts": "2026-08-10T14:30:00Z", "type": "file", "event": "MODIFIED", "path": "backup.log", "actor": "cron", "proc": "backup.sh", "exe": "bash", "unit": "user@1000.service", "watch": "home", "project": "home"}
 ```
 
 Git commit event:
@@ -171,13 +174,22 @@ watch:
 idle_gap_min: 15
 actors:
   agents:
-    - "opencode"
-    - "claude"
-    - "codex"
+    - hermes
+    - opencode
+    - claude
+    - codex
   humans:
-    - "code-server"
-    - "vscode"
-    - "node"                # your interactive sessions if applicable
+    - code-server
+    - vscode
+    - node                # your interactive sessions if applicable
+  system:
+    - systemd
+    - apt
+    - rsync
+  non_billable:
+    - cron
+  exclude: []
+process_tracking: true
 billing:
   day_hours: 8
   increment_hours: 4        # half-day
@@ -191,8 +203,9 @@ autostart: true
 
 ```
 btl status                    # daemon health, last event, active sessions
-btl start | stop | restart    # manage daemon
+btl start | stop | restart    # manage daemon (restart reloads config via unit)
 btl autostart on|off          # systemd / launchd registration
+btl setup-root                # sudo: install root fanotify daemon (process tracking)
 btl note "working on X"       # attach note to current session (starts one if idle)
 btl note stop                 # end current note/session explicitly
 btl notes --day ...           # list notes for a window
@@ -208,6 +221,7 @@ btl config edit               # open config in editor
 
 - Runs on the host system or inside a container — **no Docker-specific assumptions**
 - Linux: systemd user service (`btl.service`); macOS: launchd LaunchAgent (`com.btl.daemon.plist`)
+- Linux with process attribution: `sudo btl setup-root` → system unit `btl-root.service` (fanotify, root); user-level CLI talks to it over `/run/btl/btl.sock` — no sudo needed after setup
 - Coder workspace: logs live in the persisted workspace volume — **no sync needed**
 - Agent integration: point any agent at `btl export` output or the log dir for narrative/invoice reports
 
@@ -231,3 +245,4 @@ All previously raised questions resolved (see Key Decisions D9–D14):
 - Auto-generated weekly narrative report via agent
 - Snapshot diff summary per session (which files changed how)
 - CSV export (if ever needed)
+- auditd backend (alternative attribution source, root-only)

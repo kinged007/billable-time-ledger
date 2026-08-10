@@ -174,15 +174,15 @@ class InotifyBackend(Backend):
             self._register(full)
 
         if mask & IN_MOVED_FROM:
-            self.on_event("moved", full, is_dir)
+            self.on_event("moved", full, is_dir, None)
         elif mask & IN_MOVED_TO:
-            self.on_event("moved", full, is_dir)
+            self.on_event("moved", full, is_dir, None)
         elif mask & IN_CREATE:
-            self.on_event("created", full, is_dir)
+            self.on_event("created", full, is_dir, None)
         elif mask & IN_DELETE:
-            self.on_event("deleted", full, is_dir)
+            self.on_event("deleted", full, is_dir, None)
         elif mask & IN_CLOSE_WRITE:
-            self.on_event("modified", full, is_dir)
+            self.on_event("modified", full, is_dir, None)
 
     # -- lifecycle ----------------------------------------------------
 
@@ -213,3 +213,7 @@ class InotifyBackend(Backend):
         self._stop.set()
         if self._thread:
             self._thread.join(timeout=3)
+
+    @property
+    def kind(self) -> str:
+        return "inotify"

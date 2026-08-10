@@ -30,7 +30,7 @@ class _Handler(FileSystemEventHandler):
         for ex in self.excludes:
             if ex in parts:
                 return
-        self.on_event(event.event_type, path, event.is_directory)
+        self.on_event(event.event_type, path, event.is_directory, None)
 
 
 class FSEventsBackend(Backend):
@@ -50,3 +50,7 @@ class FSEventsBackend(Backend):
     def stop(self) -> None:
         self.observer.stop()
         self.observer.join(timeout=5)
+
+    @property
+    def kind(self) -> str:
+        return "fsevents"

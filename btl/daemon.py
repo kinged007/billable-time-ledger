@@ -28,6 +28,7 @@ from pathlib import Path
 from btl import config as cfg
 from btl.backends import create_backend
 from btl.ledger import Ledger
+from btl.procattr import ActorClassifier, ProcessInspector
 
 # File events we keep (backend emits only created/modified/deleted/moved;
 # reads are never reported — FR-3 naturally satisfied)
@@ -57,6 +58,7 @@ class WatchState:
         self.repos: set[str] = set()          # repo roots seen recently
         self.repo_lock = threading.Lock()
         self._seq = 0
+        self.backend_kind: str = "unknown"
 
     def new_session_id(self) -> int:
         # epoch-seconds: unique across daemon restarts (sessions are
@@ -72,13 +74,28 @@ class BtlEventHandler:
     """Receives backend events for one watch; writes to the ledger."""
 
     def __init__(self, state: WatchState, global_cfg: dict, excludes: set[str],
-                 config_root: str):
+                 config_root: str, process_tracking: bool = True):
         self.state = state
         self.global_cfg = global_cfg
         self.excludes = excludes
         self.config_root = config_root
+        self.exclude_actors = set(
+            global_cfg.get("actors", {}).get("exclude", []) or []
+        )
+        if process_tracking:
+            actors = global_cfg.get("actors", {})
+            self.inspector = ProcessInspector()
+            self.classifier = ActorClassifier(
+                agents=actors.get("agents", []),
+                humans=actors.get("humans", []),
+                system=actors.get("system", []),
+            )
+        else:
+            self.inspector = None
+            self.classifier = None
 
-    def on_event(self, event_type: str, path: str, is_dir: bool) -> None:
+    def on_event(self, event_type: str, path: str, is_dir: bool,
+                 pid: int | None = None) -> None:
         if event_type not in KEEP_EVENTS:
             return
         if not path:
@@ -92,6 +109,9 @@ class BtlEventHandler:
             # commit signal: queue repo for capture, no file event logged
             self._queue_git_repo(path)
             return
+        actor, proc, exe, unit = self._attribution(pid)
+        if actor in self.exclude_actors:
+            return
         self._ensure_session(reason="activity")
         rel = self._rel(path)
         self.state.ledger.append(
@@ -99,10 +119,25 @@ class BtlEventHandler:
             event=event_type.upper(),
             path=rel,
             is_dir=is_dir,
-            actor="unknown",      # FR-19: no PID from inotify/FSEvents
+            actor=actor,
+            proc=proc,
+            exe=exe,
+            unit=unit,
             watch=self.state.w["name"],
             project=self.state.w["project"],
         )
+
+    def _attribution(self, pid: int | None) -> tuple[str, str, str, str]:
+        """Map a backend PID to (actor, proc, exe, unit). Fail-open."""
+        if pid is None or self.inspector is None or self.classifier is None:
+            return "unknown", "", "", ""
+        info = self.inspector.inspect(pid)
+        if info is None:
+            return "unknown", "", "", ""
+        actor = self.classifier.classify(info)
+        return (actor, info.comm,
+                os.path.basename(info.exe) if info.exe else "",
+                info.unit)
 
     # -- helpers ------------------------------------------------------
 
@@ -219,18 +254,24 @@ class Daemon:
 
     def start(self) -> None:
         excludes = set(self.global_cfg.get("exclude", []))
+        process_tracking = bool(self.global_cfg.get("process_tracking", True))
         for w in self.watches:
             ledger = Ledger(w["log_dir"])
             state = WatchState(w, ledger)
-            handler = BtlEventHandler(state, self.global_cfg, excludes, str(self.root))
+            handler = BtlEventHandler(state, self.global_cfg, excludes,
+                                      str(self.root), process_tracking)
             backend = create_backend(
-                w["root"], excludes, str(self.root), handler.on_event
+                w["root"], excludes, str(self.root), handler.on_event,
+                process_tracking=process_tracking,
             )
             backend.start()
+            state.backend_kind = backend.kind
             self.states.append(state)
             self.ledgers.append(ledger)
             self.backends.append(backend)
             state.last_activity = time.time()  # don't immediately idle
+            print(f"watch '{w['name']}' → backend {backend.kind} "
+                  f"(root {w['root']})")
         self.idle_timer = IdleTimer(self.states)
         self.idle_timer.start()
 
@@ -272,18 +313,38 @@ class Daemon:
         )
 
     def cmd_status(self) -> dict:
-        out = {"running": True, "config_root": str(self.root), "watches": []}
+        out = {
+            "running": True,
+            "config_root": str(self.root),
+            "process_tracking": bool(self.global_cfg.get("process_tracking", True)),
+            "watches": [],
+        }
         for st in self.states:
             out["watches"].append({
                 "name": st.w["name"],
                 "root": st.root,
                 "project": st.w["project"],
+                "backend": st.backend_kind,
                 "active_session": st.active,
                 "note": st.note_text,
                 "idle_gap_min": st.w["idle_gap_min"],
                 "events_logged": st.ledger.count,
             })
         return out
+
+    def cmd_restart(self) -> dict:
+        """Restart the daemon (systemd unit) so new config takes effect."""
+        if os.geteuid() == 0:
+            unit = "btl-root.service"
+            cmd = ["systemctl", "restart", unit]
+        else:
+            unit = "btl.service"
+            cmd = ["systemctl", "--user", "restart", unit]
+        try:
+            subprocess.Popen(cmd)
+            return {"ok": True, "restarting": True, "unit": unit}
+        except OSError:
+            return {"ok": False, "error": "systemctl not available"}
 
     def cmd_note(self, text: str, watch: str | None) -> dict:
         st = self.find_state(watch)

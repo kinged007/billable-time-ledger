@@ -29,29 +29,49 @@ def _billing_units(duration_min: float, increment_hours: float) -> float:
     return round(duration_min / (increment_hours * 60), 2)
 
 
+def _actor_lines(actors: Counter, non_billable: set[str]) -> list[str]:
+    if not actors:
+        return ["_None._"]
+    out = []
+    for act, n in actors.most_common():
+        nb = " (non-billable)" if act in non_billable else ""
+        out.append(f"- {act}: {n} events{nb}")
+    return out
+
+
 def daily_report(log_dir: str, day: str, billing: dict | None = None,
-                 watch: str = "") -> str:
+                 watch: str = "", non_billable: set[str] | None = None) -> str:
     billing = billing or {}
     inc = float(billing.get("increment_hours", 4))
+    non_billable = non_billable or set()
     events = [e for e in sessionizer.load_events(log_dir) if _day_of(e.get("ts", "")) == day]
-    sessions = [s for s in sessionizer.build_sessions(log_dir) if _day_of(s["start"]) == day]
+    sessions = [s for s in sessionizer.build_sessions(
+        log_dir, non_billable=non_billable) if _day_of(s["start"]) == day]
     files = Counter()
     commits = []
     notes = []
+    actors = Counter()
     for e in events:
         if e.get("type") == "file":
             files[e.get("path", "")] += 1
+            actors[e.get("actor", "unknown")] += 1
         elif e.get("type") == "git_commit":
             commits.append(e)
         elif e.get("type") == "note_start":
             notes.append(e)
 
     active = sessionizer.total_active_min(sessions)
+    non_bill_min = sessionizer.total_active_min(
+        sessions, billable_only=False) - active
     lines = [
         f"# btl daily report — {day}" + (f" · watch: {watch}" if watch else ""),
         "",
         f"- **Billable time** (session spans): {_hm(active)} ({len(sessions)} sessions)",
         f"- **Billable units** (increment {inc:g}h): {_billing_units(active, inc)}",
+    ]
+    if non_bill_min > 0:
+        lines.append(f"- **Non-billable** (cron/system): {_hm(non_bill_min)}")
+    lines += [
         f"- **Files touched**: {len(files)}",
         f"- **Commits**: {len(commits)}",
         f"- **Notes**: {len(notes)}",
@@ -63,6 +83,8 @@ def daily_report(log_dir: str, day: str, billing: dict | None = None,
         lines.append("_No sessions._")
     for s in sessions:
         mark = " (open)" if s.get("open") else ""
+        if not s.get("billable", True):
+            mark += " (non-billable)"
         extra = ""
         if s.get("active_min") is not None:
             extra = f" / {_hm(s['active_min'])} writing"
@@ -74,6 +96,8 @@ def daily_report(log_dir: str, day: str, billing: dict | None = None,
         )
         for n in s["notes"]:
             lines.append(f"  - note: {n.get('text', '')}")
+    lines += ["", "## By actor", ""]
+    lines += _actor_lines(actors, non_billable)
     lines += ["", "## Top files", ""]
     if files:
         for path, n in files.most_common(15):
@@ -96,27 +120,37 @@ def daily_report(log_dir: str, day: str, billing: dict | None = None,
 
 
 def monthly_report(log_dir: str, month: str, billing: dict | None = None,
-                   watch: str = "") -> str:
+                   watch: str = "", non_billable: set[str] | None = None) -> str:
     """month = 'YYYY-MM'"""
     billing = billing or {}
     inc = float(billing.get("increment_hours", 4))
     target = float(billing.get("monthly_target_days", 10))
     day_hours = float(billing.get("day_hours", 8))
+    non_billable = non_billable or set()
 
     events = [e for e in sessionizer.load_events(log_dir)
               if e.get("ts", "").startswith(month)]
-    sessions = [s for s in sessionizer.build_sessions(log_dir)
+    sessions = [s for s in sessionizer.build_sessions(
+        log_dir, non_billable=non_billable)
                 if s["start"].startswith(month)]
 
     per_day: dict[str, float] = defaultdict(float)
     per_project: dict[str, float] = defaultdict(float)
+    actors = Counter()
     commits = [e for e in events if e.get("type") == "git_commit"]
     for s in sessions:
+        if not s.get("billable", True):
+            continue
         span = s.get("duration_min", 0)   # billable: full session block
         per_day[_day_of(s["start"])] += span
         per_project[s.get("project", "?")] += span
+    for e in events:
+        if e.get("type") == "file":
+            actors[e.get("actor", "unknown")] += 1
 
     total = sessionizer.total_active_min(sessions)
+    non_bill_min = sessionizer.total_active_min(
+        sessions, billable_only=False) - total
     days_worked = len(per_day)
     full_days = total / (day_hours * 60)
     units = _billing_units(total, inc)
@@ -131,9 +165,10 @@ def monthly_report(log_dir: str, month: str, billing: dict | None = None,
         f"- **Target** ({target:g} days): {'met ✓' if days_worked >= target else f'{target - days_worked:.0f} days short'}",
         f"- **Commits**: {len(commits)}",
         "",
-        "## Per day",
-        "",
     ]
+    if non_bill_min > 0:
+        lines.append(f"- **Non-billable** (cron/system): {_hm(non_bill_min)}")
+    lines += ["## Per day", ""]
     if per_day:
         for d in sorted(per_day):
             lines.append(f"- {d}  {_hm(per_day[d])}")
@@ -145,6 +180,8 @@ def monthly_report(log_dir: str, month: str, billing: dict | None = None,
             lines.append(f"- {p}  {_hm(m)}")
     else:
         lines.append("_None._")
+    lines += ["", "## By actor", ""]
+    lines += _actor_lines(actors, non_billable)
     lines += ["", "## Commits", ""]
     if commits:
         for c in commits:
@@ -165,7 +202,8 @@ def _norm_bound(v: str | None, end_of_day: bool) -> str | None:
 
 
 def export_json(log_dir: str, since: str | None = None, until: str | None = None,
-                include_raw: bool = False) -> str:
+                include_raw: bool = False,
+                non_billable: set[str] | None = None) -> str:
     import json
     since = _norm_bound(since, end_of_day=False)
     until = _norm_bound(until, end_of_day=True)
@@ -174,14 +212,15 @@ def export_json(log_dir: str, since: str | None = None, until: str | None = None
         events = [e for e in events if e.get("ts", "") >= since]
     if until:
         events = [e for e in events if e.get("ts", "") <= until]
-    sessions = sessionizer.build_sessions(log_dir)
+    sessions = sessionizer.build_sessions(log_dir, non_billable=non_billable)
     if include_raw:
         return json.dumps({"events": events, "sessions": sessions}, indent=2)
     return json.dumps({"sessions": sessions}, indent=2)
 
 
 def export_markdown(log_dir: str, since: str | None = None, until: str | None = None,
-                    include_raw: bool = False) -> str:
+                    include_raw: bool = False,
+                    non_billable: set[str] | None = None) -> str:
     since = _norm_bound(since, end_of_day=False)
     until = _norm_bound(until, end_of_day=True)
     events = sessionizer.load_events(log_dir)
@@ -189,7 +228,8 @@ def export_markdown(log_dir: str, since: str | None = None, until: str | None = 
         events = [e for e in events if e.get("ts", "") >= since]
     if until:
         events = [e for e in events if e.get("ts", "") <= until]
-    sessions = [s for s in sessionizer.build_sessions(log_dir)
+    sessions = [s for s in sessionizer.build_sessions(
+        log_dir, non_billable=non_billable)
                 if (not since or s["start"] >= since) and (not until or s["end"] <= until)]
     lines = [
         "# btl export",
@@ -202,6 +242,8 @@ def export_markdown(log_dir: str, since: str | None = None, until: str | None = 
     ]
     for s in sessions:
         mark = " (open)" if s.get("open") else ""
+        if not s.get("billable", True):
+            mark += " (non-billable)"
         extra = ""
         if s.get("active_min") is not None:
             extra = f" / {_hm(s['active_min'])} writing"

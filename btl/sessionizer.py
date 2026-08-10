@@ -42,7 +42,8 @@ def _parse_ts(ts: str) -> datetime:
 
 
 def build_sessions(log_dir: str, idle_gap_min: int | None = None,
-                   now: datetime | None = None) -> list[dict]:
+                   now: datetime | None = None,
+                   non_billable: set[str] | None = None) -> list[dict]:
     """Reconstruct sessions from session_start/session_end markers.
 
     Session markers carry the authoritative boundaries; if a session_end
@@ -56,6 +57,7 @@ def build_sessions(log_dir: str, idle_gap_min: int | None = None,
     current: dict | None = None
     by_id: dict[int, dict] = {}
     now = now or datetime.now(timezone.utc)
+    non_billable = non_billable or set()
 
     for ev in events:
         etype = ev.get("type", "file")
@@ -70,6 +72,7 @@ def build_sessions(log_dir: str, idle_gap_min: int | None = None,
                 "files": set(),
                 "events": 0,
                 "actors": {},
+                "_nb_events": 0,
                 "notes": [],
                 "commits": [],
                 "_first": ts,
@@ -97,6 +100,8 @@ def build_sessions(log_dir: str, idle_gap_min: int | None = None,
                 current["files"].add(p)
             act = ev.get("actor", "unknown")
             current["actors"][act] = current["actors"].get(act, 0) + 1
+            if act in non_billable:
+                current["_nb_events"] += 1
             current["_last"] = max(current["_last"], ts)
 
     # Close dangling sessions at last event ts
@@ -108,6 +113,15 @@ def build_sessions(log_dir: str, idle_gap_min: int | None = None,
         s["files"] = sorted(s["files"])
         s["duration_min"] = round((s["_end_ts"] - s["_first"]).total_seconds() / 60, 1)
         s["active_min"] = round((s["_last"] - s["_first"]).total_seconds() / 60, 1)
+        # billable = session span, unless EVERY file event came from a
+        # non-billable actor (e.g. a cron-only block) — a cron write
+        # inside a real work session doesn't zero it. Sessions with no
+        # file events (pure notes) stay billable.
+        s["billable"] = s["_nb_events"] < s["events"]
+        s.pop("_nb_events", None)
+        s["non_billable_actors"] = sorted(
+            a for a in s["actors"] if a in non_billable
+        )
         s["open"] = s["_open"]
         s.pop("_first", None)
         s.pop("_last", None)
@@ -116,7 +130,7 @@ def build_sessions(log_dir: str, idle_gap_min: int | None = None,
     return sessions
 
 
-def total_active_min(sessions: list[dict]) -> float:
+def total_active_min(sessions: list[dict], billable_only: bool = True) -> float:
     """Billable minutes = session span (start→end), the full session block.
 
     A session spans from first activity to when it closed (idle gap,
@@ -124,4 +138,11 @@ def total_active_min(sessions: list[dict]) -> float:
     thinking, planning, discussion and gaps between file writes —
     provided activity kept the session alive within the idle gap.
     """
-    return round(sum(s.get("duration_min", 0) for s in sessions), 1)
+    return round(
+        sum(
+            s.get("duration_min", 0)
+            for s in sessions
+            if not billable_only or s.get("billable", True)
+        ),
+        1,
+    )

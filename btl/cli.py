@@ -93,16 +93,20 @@ def cmd_watch_remove(args) -> int:
 
 def cmd_status(args) -> int:
     root = cfg.config_root()
+    sock = cfg.resolved_socket_path()
     try:
-        resp = ipc.send_request(root, {"cmd": "status"})
+        resp = ipc.send_request(root, {"cmd": "status"}, sock_path=sock)
     except ConnectionError:
         print("btl daemon: not running")
         return 1
-    print(f"btl daemon: running (config: {resp['config_root']})")
+    pt = resp.get("process_tracking")
+    pt_s = f", process tracking {'ON' if pt else 'OFF'}" if pt is not None else ""
+    print(f"btl daemon: running (config: {resp['config_root']}{pt_s})")
     for w in resp["watches"]:
         note = f" · note: {w['note']}" if w["note"] else ""
         sess = "ACTIVE" if w["active_session"] else "idle"
-        print(f"  {w['name']:<18} {sess:<8} events={w['events_logged']} root={w['root']}{note}")
+        print(f"  {w['name']:<18} {sess:<8} backend={w.get('backend', '?'):<9} "
+              f"events={w['events_logged']} root={w['root']}{note}")
     return 0
 
 
@@ -110,7 +114,8 @@ def cmd_start(args) -> int:
     """Start the daemon as a background process (detached)."""
     root = cfg.config_root()
     try:
-        resp = ipc.send_request(root, {"cmd": "status"}, timeout=1)
+        resp = ipc.send_request(root, {"cmd": "status"}, timeout=1,
+                                sock_path=cfg.resolved_socket_path())
         if resp.get("running"):
             print("btl daemon already running")
             return 0
@@ -130,7 +135,8 @@ def cmd_start(args) -> int:
     for _ in range(50):
         time.sleep(0.1)
         try:
-            resp = ipc.send_request(root, {"cmd": "status"}, timeout=0.5)
+            resp = ipc.send_request(root, {"cmd": "status"}, timeout=0.5,
+                                    sock_path=cfg.resolved_socket_path())
             if resp.get("running"):
                 print(f"btl daemon started (pid {proc.pid}, logs: {logfile})")
                 return 0
@@ -143,12 +149,29 @@ def cmd_start(args) -> int:
 def cmd_stop(args) -> int:
     root = cfg.config_root()
     try:
-        resp = ipc.send_request(root, {"cmd": "shutdown"})
+        resp = ipc.send_request(root, {"cmd": "shutdown"},
+                                sock_path=cfg.resolved_socket_path())
     except ConnectionError:
         print("btl daemon: not running")
         return 1
     print("btl daemon stopped")
     return 0
+
+
+def cmd_restart(args) -> int:
+    root = cfg.config_root()
+    try:
+        resp = ipc.send_request(root, {"cmd": "restart"},
+                                sock_path=cfg.resolved_socket_path())
+    except ConnectionError as e:
+        print(f"error: {e}")
+        return 1
+    if resp.get("ok"):
+        unit = resp.get("unit", "btl.service")
+        print(f"restarting daemon via {unit} (config reload)...")
+        return 0
+    print(f"error: {resp.get('error', 'restart failed')}")
+    return 1
 
 
 def cmd_autostart(args) -> int:
@@ -215,12 +238,83 @@ def cmd_autostart(args) -> int:
     return 0
 
 
+def _setup_root_unit(sudo_user: str, btl_bin: str, cfg_root: str,
+                     uid: int, gid: int) -> str:
+    """Return the btl-root.service unit content for the given user."""
+    return f"""[Unit]
+Description=btl — Billable Time Ledger daemon (root, fanotify process tracking)
+After=multi-user.target
+
+[Service]
+Type=simple
+User=root
+Environment=BTL_CONFIG_ROOT={cfg_root}
+Environment=BTL_LOG_OWNER={uid}:{gid}
+ExecStart={btl_bin} --foreground
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def cmd_setup_root(args) -> int:
+    """Install the root fanotify daemon (system unit) for process tracking.
+
+    Run as:  sudo btl setup-root
+    Replaces the user-level btl.service with btl-root.service.
+    """
+    import platform
+    import pwd
+    if platform.system() != "Linux":
+        sys.exit("setup-root is Linux-only (fanotify)")
+    if os.geteuid() != 0:
+        print("btl setup-root must run as root:")
+        print("  sudo btl setup-root")
+        return 1
+    sudo_user = os.environ.get("SUDO_USER") or os.environ.get("USER")
+    if not sudo_user or sudo_user == "root":
+        sys.exit("cannot determine the target user (run via sudo)")
+    try:
+        pw = pwd.getpwnam(sudo_user)
+    except KeyError:
+        sys.exit(f"unknown user: {sudo_user}")
+    home = pw.pw_dir
+    btl_bin = os.path.join(home, ".local", "bin", "btl-daemon")
+    if not os.path.exists(btl_bin):
+        sys.exit(f"btl-daemon not found for {sudo_user}: {btl_bin}")
+    cfg_root = os.path.join(home, ".config", "btl")
+    unit_path = "/etc/systemd/system/btl-root.service"
+    unit = _setup_root_unit(sudo_user, btl_bin, cfg_root, pw.pw_uid, pw.pw_gid)
+    Path(unit_path).write_text(unit, encoding="utf-8")
+    subprocess.run(["systemctl", "daemon-reload"], check=False)
+    # stop the user-level daemon so only the root one runs
+    subprocess.run(
+        ["systemctl", "--user", "disable", "--now", "btl.service"],
+        check=False,
+    )
+    subprocess.run(
+        ["systemctl", "enable", "--now", "btl-root.service"], check=False,
+    )
+    print(f"installed {unit_path}")
+    print(f"  config root : {cfg_root} (BTL_CONFIG_ROOT)")
+    print(f"  log owner   : {pw.pw_uid}:{pw.pw_gid} (BTL_LOG_OWNER)")
+    print("  daemon      : btl-root.service (enabled + started)")
+    print("")
+    print("user daemon btl.service stopped. verify with:  btl status")
+    print("(socket moves to /run/btl/btl.sock; CLI works unchanged)")
+    return 0
+
+
 # -- notes ------------------------------------------------------------
 
 def cmd_note(args) -> int:
     root = cfg.config_root()
     try:
-        resp = ipc.send_request(root, {"cmd": "note", "text": args.text, "watch": args.watch})
+        resp = ipc.send_request(
+            root, {"cmd": "note", "text": args.text, "watch": args.watch},
+            sock_path=cfg.resolved_socket_path())
     except ConnectionError as e:
         print(f"error: {e}")
         return 1
@@ -231,7 +325,9 @@ def cmd_note(args) -> int:
 def cmd_note_stop(args) -> int:
     root = cfg.config_root()
     try:
-        resp = ipc.send_request(root, {"cmd": "note_stop", "watch": args.watch})
+        resp = ipc.send_request(
+            root, {"cmd": "note_stop", "watch": args.watch},
+            sock_path=cfg.resolved_socket_path())
     except ConnectionError as e:
         print(f"error: {e}")
         return 1
@@ -245,7 +341,9 @@ def cmd_note_stop(args) -> int:
 def cmd_session_stop(args) -> int:
     root = cfg.config_root()
     try:
-        resp = ipc.send_request(root, {"cmd": "session_stop", "watch": args.watch})
+        resp = ipc.send_request(
+            root, {"cmd": "session_stop", "watch": args.watch},
+            sock_path=cfg.resolved_socket_path())
     except ConnectionError as e:
         print(f"error: {e}")
         return 1
@@ -272,11 +370,14 @@ def cmd_report(args) -> int:
     logdir, w = _find_watch_logdir(args.watch)
     g = cfg.load_global_config()
     billing = {**g.get("billing", {}), **w.get("billing", {})}
+    nb = cfg.non_billable_actors()
     if args.day:
-        out = report.daily_report(logdir, args.day, billing, watch=w["name"])
+        out = report.daily_report(logdir, args.day, billing, watch=w["name"],
+                                  non_billable=nb)
     else:
         month = args.month or _this_month()
-        out = report.monthly_report(logdir, month, billing, watch=w["name"])
+        out = report.monthly_report(logdir, month, billing, watch=w["name"],
+                                    non_billable=nb)
     if args.out:
         Path(args.out).write_text(out, encoding="utf-8")
         print(f"wrote {args.out}")
@@ -288,31 +389,42 @@ def cmd_report(args) -> int:
 def cmd_sessions(args) -> int:
     logdir, w = _find_watch_logdir(args.watch)
     day = args.day or _today()
-    sessions = [s for s in sessionizer.build_sessions(logdir) if s["start"].startswith(day)]
+    sessions = [s for s in sessionizer.build_sessions(
+        logdir, non_billable=cfg.non_billable_actors())
+        if s["start"].startswith(day)]
     if not sessions:
         print(f"no sessions for {day}")
         return 0
     print(f"{'session':<14} {'window':<14} {'active':<8} {'span':<7} files")
     for s in sessions:
         mark = " ●" if s.get("open") else ""
+        if not s.get("billable", True):
+            mark += " (non-billable)"
         print(
             f"#{s['id']} {s['start'][11:16]}–{s['end'][11:16]} "
             f"{s['active_min']:6.1f}m  {s['duration_min']:6.1f}m  "
             f"{len(s['files']):>4}{mark}"
         )
-    total_a = sessionizer.total_active_min(sessions)
+    total_a = sessionizer.total_active_min(sessions, billable_only=True)
+    total_nb = sessionizer.total_active_min(sessions, billable_only=False) - total_a
     total_d = round(sum(s.get("duration_min", 0) for s in sessions), 1)
     print(f"\ntotal: {total_a:.1f}m active / {total_d:.1f}m span (● = open)")
+    if total_nb > 0:
+        print(f"non-billable: {total_nb:.1f}m (cron/system)")
     return 0
 
 
 def cmd_export(args) -> int:
     logdir, w = _find_watch_logdir(args.watch)
     fmt = args.format or "json"
+    nb = cfg.non_billable_actors()
     if fmt == "json":
-        out = report.export_json(logdir, args.since, args.until, include_raw=args.include_raw)
+        out = report.export_json(logdir, args.since, args.until,
+                                 include_raw=args.include_raw, non_billable=nb)
     else:
-        out = report.export_markdown(logdir, args.since, args.until, include_raw=args.include_raw)
+        out = report.export_markdown(logdir, args.since, args.until,
+                                     include_raw=args.include_raw,
+                                     non_billable=nb)
     if args.out:
         Path(args.out).write_text(out, encoding="utf-8")
         print(f"wrote {args.out}")
@@ -336,6 +448,11 @@ def cmd_config(args) -> int:
         print(f"exclude: {', '.join(g['exclude'])}")
         print(f"actors.agents: {', '.join(g['actors']['agents'])}")
         print(f"actors.humans: {', '.join(g['actors']['humans'])}")
+        print(f"actors.system: {', '.join(g['actors'].get('system', []))}")
+        print(f"actors.non_billable: {', '.join(g['actors'].get('non_billable', []))}")
+        print(f"actors.exclude: {', '.join(g['actors'].get('exclude', [])) or '-'}")
+        print(f"process_tracking: {g.get('process_tracking', True)}")
+        print(f"socket_path: {g.get('socket_path') or '(default)'}")
         b = g["billing"]
         print(f"billing: {b['day_hours']}h days / {b['increment_hours']}h increment / {b['monthly_target_days']} days target")
         print(f"autostart: {g.get('autostart', True)}")
@@ -374,9 +491,15 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status", help="daemon status").set_defaults(func=cmd_status)
     sub.add_parser("start", help="start daemon").set_defaults(func=cmd_start)
     sub.add_parser("stop", help="stop daemon").set_defaults(func=cmd_stop)
+    sub.add_parser("restart", help="restart daemon (reload config)").set_defaults(func=cmd_restart)
     sa = sub.add_parser("autostart", help="configure startup autostart")
     sa.add_argument("mode", choices=["on", "off"])
     sa.set_defaults(func=cmd_autostart)
+    sr = sub.add_parser(
+        "setup-root",
+        help="install root fanotify daemon for process tracking (needs sudo)",
+    )
+    sr.set_defaults(func=cmd_setup_root)
 
     n = sub.add_parser("note", help="attach a working note to the current session")
     n.add_argument("text")

@@ -6,4 +6,4 @@ ledgers under ~/.config/btl/. Config and logs are fully decoupled from
 any repository.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
