@@ -148,18 +148,36 @@ def monthly_report(log_dir: str, month: str, billing: dict | None = None,
     return "\n".join(lines) + "\n"
 
 
-def export_json(log_dir: str, since: str | None = None, until: str | None = None) -> str:
+def _norm_bound(v: str | None, end_of_day: bool) -> str | None:
+    """Normalize a --since/--until bound: bare dates get padded so string
+    comparison against full ISO timestamps works."""
+    if not v:
+        return None
+    if len(v) == 10:  # YYYY-MM-DD
+        return v + ("T23:59:59.999999" if end_of_day else "T00:00:00")
+    return v
+
+
+def export_json(log_dir: str, since: str | None = None, until: str | None = None,
+                include_raw: bool = False) -> str:
     import json
+    since = _norm_bound(since, end_of_day=False)
+    until = _norm_bound(until, end_of_day=True)
     events = sessionizer.load_events(log_dir)
     if since:
         events = [e for e in events if e.get("ts", "") >= since]
     if until:
         events = [e for e in events if e.get("ts", "") <= until]
     sessions = sessionizer.build_sessions(log_dir)
-    return json.dumps({"events": events, "sessions": sessions}, indent=2)
+    if include_raw:
+        return json.dumps({"events": events, "sessions": sessions}, indent=2)
+    return json.dumps({"sessions": sessions}, indent=2)
 
 
-def export_markdown(log_dir: str, since: str | None = None, until: str | None = None) -> str:
+def export_markdown(log_dir: str, since: str | None = None, until: str | None = None,
+                    include_raw: bool = False) -> str:
+    since = _norm_bound(since, end_of_day=False)
+    until = _norm_bound(until, end_of_day=True)
     events = sessionizer.load_events(log_dir)
     if since:
         events = [e for e in events if e.get("ts", "") >= since]
@@ -170,7 +188,6 @@ def export_markdown(log_dir: str, since: str | None = None, until: str | None = 
     lines = [
         "# btl export",
         "",
-        f"- Events: {len(events)}",
         f"- Sessions: {len(sessions)}",
         f"- Active: {_hm(sessionizer.total_active_min(sessions))}",
         "",
@@ -186,13 +203,14 @@ def export_markdown(log_dir: str, since: str | None = None, until: str | None = 
             lines.append(f"  - note: {n.get('text', '')}")
         for c in s["commits"]:
             lines.append(f"  - commit: `{c.get('hash', '')[:8]}` {c.get('message', '')}")
-    lines += ["", "## Raw events", ""]
-    for e in events:
-        etype = e.get("type", "file")
-        if etype == "file":
-            lines.append(f"- {e.get('ts', '')} {e.get('event', '')} {e.get('path', '')}")
-        elif etype in ("note_start", "note_stop", "session_start", "session_end", "git_commit"):
-            lines.append(f"- {e.get('ts', '')} {etype}: {json_dumps(e)}")
+    if include_raw:
+        lines += ["", "## Raw events", ""]
+        for e in events:
+            etype = e.get("type", "file")
+            if etype == "file":
+                lines.append(f"- {e.get('ts', '')} {e.get('event', '')} {e.get('path', '')}")
+            elif etype in ("note_start", "note_stop", "session_start", "session_end", "git_commit"):
+                lines.append(f"- {e.get('ts', '')} {etype}: {json_dumps(e)}")
     return "\n".join(lines) + "\n"
 
 

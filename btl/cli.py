@@ -305,9 +305,9 @@ def cmd_export(args) -> int:
     logdir, w = _find_watch_logdir(args.watch)
     fmt = args.format or "json"
     if fmt == "json":
-        out = report.export_json(logdir, args.since, args.until)
+        out = report.export_json(logdir, args.since, args.until, include_raw=args.include_raw)
     else:
-        out = report.export_markdown(logdir, args.since, args.until)
+        out = report.export_markdown(logdir, args.since, args.until, include_raw=args.include_raw)
     if args.out:
         Path(args.out).write_text(out, encoding="utf-8")
         print(f"wrote {args.out}")
@@ -404,6 +404,8 @@ def build_parser() -> argparse.ArgumentParser:
     ex.add_argument("--since", default=None)
     ex.add_argument("--until", default=None)
     ex.add_argument("--format", choices=["json", "md"], default="json")
+    ex.add_argument("--include-raw", action="store_true",
+                    help="include raw file events (default: sessions summary only)")
     ex.add_argument("--watch", default=None)
     ex.add_argument("--out", default=None)
     ex.set_defaults(func=cmd_export)

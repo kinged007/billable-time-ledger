@@ -26,7 +26,7 @@ CONFIG_ROOT_ENV = "BTL_CONFIG_ROOT"
 DEFAULT_CONFIG_ROOT = "~/.config/btl"
 
 DEFAULT_IDLE_GAP_MIN = 15
-DEFAULT_EXCLUDES = ["node_modules", ".cache", "__pycache__", ".venv", ".git"]
+DEFAULT_EXCLUDES = ["node_modules", ".cache", "__pycache__", ".venv", ".git", ".hermes"]
 DEFAULT_AGENTS = ["opencode", "claude", "codex", "aider", "gemini", "cursor"]
 DEFAULT_HUMANS = ["code-server", "vscode", "code", "node", "python", "bash", "zsh", "ssh"]
 DEFAULT_BILLING = {"day_hours": 8, "increment_hours": 4, "monthly_target_days": 10}
@@ -140,6 +140,7 @@ exclude:
   - __pycache__
   - .venv
   - .git
+  - .hermes
 actors:
   agents:
     - opencode
