@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "btl"
+version = "0.1.0"
+description = "Billable Time Ledger — automated file-level activity logger for Unix systems"
+requires-python = ">=3.10"
+dependencies = [
+    "watchdog>=4.0",
+    "PyYAML>=6.0",
+]
+
+[project.scripts]
+btl = "btl.cli:main"
+btl-daemon = "btl.daemon_main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["btl"]
