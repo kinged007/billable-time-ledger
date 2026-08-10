@@ -8,6 +8,10 @@ from datetime import datetime, timezone
 from btl import sessionizer
 
 
+def _as_list(log_dir) -> list[str]:
+    return [log_dir] if isinstance(log_dir, str) else list(log_dir)
+
+
 def _day_of(ts: str) -> str:
     try:
         return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(
@@ -39,14 +43,17 @@ def _actor_lines(actors: Counter, non_billable: set[str]) -> list[str]:
     return out
 
 
-def daily_report(log_dir: str, day: str, billing: dict | None = None,
+def daily_report(log_dir: str | list[str], day: str, billing: dict | None = None,
                  watch: str = "", non_billable: set[str] | None = None) -> str:
     billing = billing or {}
     inc = float(billing.get("increment_hours", 4))
     non_billable = non_billable or set()
-    events = [e for e in sessionizer.load_events(log_dir) if _day_of(e.get("ts", "")) == day]
-    sessions = [s for s in sessionizer.build_sessions(
-        log_dir, non_billable=non_billable) if _day_of(s["start"]) == day]
+    log_dirs = _as_list(log_dir)
+    events = [e for e in sessionizer.load_events_multi(log_dirs)
+              if _day_of(e.get("ts", "")) == day]
+    sessions = [s for s in sessionizer.build_sessions_multi(
+        log_dirs, non_billable=non_billable) if _day_of(s["start"]) == day]
+    sessions.sort(key=lambda s: s["start"])
     files = Counter()
     commits = []
     notes = []
@@ -119,20 +126,23 @@ def daily_report(log_dir: str, day: str, billing: dict | None = None,
     return "\n".join(lines) + "\n"
 
 
-def monthly_report(log_dir: str, month: str, billing: dict | None = None,
+def monthly_report(log_dir: str | list[str], month: str, billing: dict | None = None,
                    watch: str = "", non_billable: set[str] | None = None) -> str:
     """month = 'YYYY-MM'"""
     billing = billing or {}
     inc = float(billing.get("increment_hours", 4))
-    target = float(billing.get("monthly_target_days", 10))
+    target_raw = billing.get("monthly_target_days")
+    target = float(target_raw) if target_raw else None
     day_hours = float(billing.get("day_hours", 8))
     non_billable = non_billable or set()
 
-    events = [e for e in sessionizer.load_events(log_dir)
+    log_dirs = _as_list(log_dir)
+    events = [e for e in sessionizer.load_events_multi(log_dirs)
               if e.get("ts", "").startswith(month)]
-    sessions = [s for s in sessionizer.build_sessions(
-        log_dir, non_billable=non_billable)
+    sessions = [s for s in sessionizer.build_sessions_multi(
+        log_dirs, non_billable=non_billable)
                 if s["start"].startswith(month)]
+    sessions.sort(key=lambda s: s["start"])
 
     per_day: dict[str, float] = defaultdict(float)
     per_project: dict[str, float] = defaultdict(float)
@@ -162,10 +172,15 @@ def monthly_report(log_dir: str, month: str, billing: dict | None = None,
         f"- **Days worked**: {days_worked}",
         f"- **Full days equivalent** ({day_hours:g}h days): {full_days:.1f}",
         f"- **Billable units** ({inc:g}h): {units}",
-        f"- **Target** ({target:g} days): {'met ✓' if days_worked >= target else f'{target - days_worked:.0f} days short'}",
         f"- **Commits**: {len(commits)}",
         "",
     ]
+    if target is not None:
+        lines.insert(
+            -2,
+            f"- **Target** ({target:g} days): "
+            f"{'met ✓' if days_worked >= target else f'{target - days_worked:.0f} days short'}",
+        )
     if non_bill_min > 0:
         lines.append(f"- **Non-billable** (cron/system): {_hm(non_bill_min)}")
     lines += ["## Per day", ""]
@@ -201,35 +216,37 @@ def _norm_bound(v: str | None, end_of_day: bool) -> str | None:
     return v
 
 
-def export_json(log_dir: str, since: str | None = None, until: str | None = None,
+def export_json(log_dir: str | list[str], since: str | None = None, until: str | None = None,
                 include_raw: bool = False,
                 non_billable: set[str] | None = None) -> str:
     import json
     since = _norm_bound(since, end_of_day=False)
     until = _norm_bound(until, end_of_day=True)
-    events = sessionizer.load_events(log_dir)
+    log_dirs = _as_list(log_dir)
+    events = sessionizer.load_events_multi(log_dirs)
     if since:
         events = [e for e in events if e.get("ts", "") >= since]
     if until:
         events = [e for e in events if e.get("ts", "") <= until]
-    sessions = sessionizer.build_sessions(log_dir, non_billable=non_billable)
+    sessions = sessionizer.build_sessions_multi(log_dirs, non_billable=non_billable)
     if include_raw:
         return json.dumps({"events": events, "sessions": sessions}, indent=2)
     return json.dumps({"sessions": sessions}, indent=2)
 
 
-def export_markdown(log_dir: str, since: str | None = None, until: str | None = None,
+def export_markdown(log_dir: str | list[str], since: str | None = None, until: str | None = None,
                     include_raw: bool = False,
                     non_billable: set[str] | None = None) -> str:
     since = _norm_bound(since, end_of_day=False)
     until = _norm_bound(until, end_of_day=True)
-    events = sessionizer.load_events(log_dir)
+    log_dirs = _as_list(log_dir)
+    events = sessionizer.load_events_multi(log_dirs)
     if since:
         events = [e for e in events if e.get("ts", "") >= since]
     if until:
         events = [e for e in events if e.get("ts", "") <= until]
-    sessions = [s for s in sessionizer.build_sessions(
-        log_dir, non_billable=non_billable)
+    sessions = [s for s in sessionizer.build_sessions_multi(
+        log_dirs, non_billable=non_billable)
                 if (not since or s["start"] >= since) and (not until or s["end"] <= until)]
     lines = [
         "# btl export",

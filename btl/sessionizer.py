@@ -34,6 +34,29 @@ def load_events(log_dir: str) -> list[dict]:
     return list(iter_events(log_dir))
 
 
+def load_events_multi(log_dirs: list[str]) -> list[dict]:
+    """Merge + time-sort events from several watch log dirs."""
+    events: list[dict] = []
+    for d in log_dirs:
+        events.extend(load_events(d))
+    events.sort(key=lambda e: e.get("ts", ""))
+    return events
+
+
+def build_sessions_multi(log_dirs: list[str], idle_gap_min: int | None = None,
+                         now: datetime | None = None,
+                         non_billable: set[str] | None = None) -> list[dict]:
+    """Build sessions per watch dir, then merge sorted by start time."""
+    sessions: list[dict] = []
+    for d in log_dirs:
+        sessions.extend(
+            build_sessions(d, idle_gap_min=idle_gap_min, now=now,
+                           non_billable=non_billable)
+        )
+    sessions.sort(key=lambda s: s["start"])
+    return sessions
+
+
 def _parse_ts(ts: str) -> datetime:
     try:
         return datetime.fromisoformat(ts.replace("Z", "+00:00"))

@@ -22,20 +22,17 @@ def _this_month() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m")
 
 
-def _find_watch_logdir(name: str | None, require: bool = True) -> tuple[str, dict]:
+def _find_watch_logdirs(name: str | None = None) -> list[dict]:
+    """All watches (or the named one). Commands without --watch aggregate."""
     watches = cfg.load_all_watches()
     if name:
         w = next((w for w in watches if w["name"] == name), None)
         if not w:
             sys.exit(f"error: unknown watch '{name}' — available: {[x['name'] for x in watches]}")
-        return w["log_dir"], w
-    if len(watches) == 1:
-        return watches[0]["log_dir"], watches[0]
-    if require and not watches:
+        return [w]
+    if not watches:
         sys.exit("error: no watches configured — see 'btl watch add'")
-    if require:
-        sys.exit(f"error: multiple watches — specify one: {[x['name'] for x in watches]}")
-    return "", {}
+    return watches
 
 
 # -- watch management ------------------------------------------------
@@ -317,6 +314,9 @@ def cmd_setup_root(args) -> int:
 # -- notes ------------------------------------------------------------
 
 def cmd_note(args) -> int:
+    if args.text.lower() in ("stop", "end"):
+        # 'btl note stop' / 'btl note end' are aliases for note-stop
+        return cmd_note_stop(args)
     root = cfg.config_root()
     try:
         resp = ipc.send_request(
@@ -359,31 +359,33 @@ def cmd_session_stop(args) -> int:
 
 
 def cmd_notes(args) -> int:
-    logdir, w = _find_watch_logdir(args.watch)
+    watches = _find_watch_logdirs(args.watch)
     day = args.day or _today()
-    events = [e for e in sessionizer.load_events(logdir)
+    events = [e for e in sessionizer.load_events_multi([w["log_dir"] for w in watches])
               if e.get("type") == "note_start" and e.get("ts", "").startswith(day)]
     if not events:
         print(f"no notes for {day}")
         return 0
     for e in events:
-        print(f"{e['ts'][11:16]}  {e.get('text', '')}")
+        print(f"{e['ts'][11:16]}  [{e.get('watch', '?')}]  {e.get('text', '')}")
     return 0
 
 
 # -- reports ----------------------------------------------------------
 
 def cmd_report(args) -> int:
-    logdir, w = _find_watch_logdir(args.watch)
+    watches = _find_watch_logdirs(args.watch)
+    logdirs = [w["log_dir"] for w in watches]
+    wname = ", ".join(w["name"] for w in watches)
     g = cfg.load_global_config()
-    billing = {**g.get("billing", {}), **w.get("billing", {})}
+    billing = dict(g.get("billing", {}))
     nb = cfg.non_billable_actors()
     if args.day:
-        out = report.daily_report(logdir, args.day, billing, watch=w["name"],
+        out = report.daily_report(logdirs, args.day, billing, watch=wname,
                                   non_billable=nb)
     else:
         month = args.month or _this_month()
-        out = report.monthly_report(logdir, month, billing, watch=w["name"],
+        out = report.monthly_report(logdirs, month, billing, watch=wname,
                                     non_billable=nb)
     if args.out:
         Path(args.out).write_text(out, encoding="utf-8")
@@ -394,15 +396,16 @@ def cmd_report(args) -> int:
 
 
 def cmd_sessions(args) -> int:
-    logdir, w = _find_watch_logdir(args.watch)
+    watches = _find_watch_logdirs(args.watch)
+    logdirs = [w["log_dir"] for w in watches]
     day = args.day or _today()
-    sessions = [s for s in sessionizer.build_sessions(
-        logdir, non_billable=cfg.non_billable_actors())
+    sessions = [s for s in sessionizer.build_sessions_multi(
+        logdirs, non_billable=cfg.non_billable_actors())
         if s["start"].startswith(day)]
     if not sessions:
         print(f"no sessions for {day}")
         return 0
-    print(f"{'session':<14} {'window':<14} {'active':<8} {'span':<7} files")
+    print(f"{'session':<14} {'window':<14} {'active':<8} {'span':<7} files project")
     for s in sessions:
         mark = " ●" if s.get("open") else ""
         if not s.get("billable", True):
@@ -410,7 +413,7 @@ def cmd_sessions(args) -> int:
         print(
             f"#{s['id']} {s['start'][11:16]}–{s['end'][11:16]} "
             f"{s['active_min']:6.1f}m  {s['duration_min']:6.1f}m  "
-            f"{len(s['files']):>4}{mark}"
+            f"{len(s['files']):>4}  {s.get('project', ''):<12}{mark}"
         )
     total_a = sessionizer.total_active_min(sessions, billable_only=True)
     total_nb = sessionizer.total_active_min(sessions, billable_only=False) - total_a
@@ -422,14 +425,15 @@ def cmd_sessions(args) -> int:
 
 
 def cmd_export(args) -> int:
-    logdir, w = _find_watch_logdir(args.watch)
+    watches = _find_watch_logdirs(args.watch)
+    logdirs = [w["log_dir"] for w in watches]
     fmt = args.format or "json"
     nb = cfg.non_billable_actors()
     if fmt == "json":
-        out = report.export_json(logdir, args.since, args.until,
+        out = report.export_json(logdirs, args.since, args.until,
                                  include_raw=args.include_raw, non_billable=nb)
     else:
-        out = report.export_markdown(logdir, args.since, args.until,
+        out = report.export_markdown(logdirs, args.since, args.until,
                                      include_raw=args.include_raw,
                                      non_billable=nb)
     if args.out:
@@ -461,7 +465,8 @@ def cmd_config(args) -> int:
         print(f"process_tracking: {g.get('process_tracking', True)}")
         print(f"socket_path: {g.get('socket_path') or '(default)'}")
         b = g["billing"]
-        print(f"billing: {b['day_hours']}h days / {b['increment_hours']}h increment / {b['monthly_target_days']} days target")
+        target_s = f" / {b['monthly_target_days']} days target" if b.get("monthly_target_days") else ""
+        print(f"billing: {b['day_hours']}h days / {b['increment_hours']}h increment{target_s}")
         print(f"autostart: {g.get('autostart', True)}")
         if gpath.exists():
             print("--- file ---")

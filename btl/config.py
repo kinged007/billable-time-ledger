@@ -26,12 +26,12 @@ CONFIG_ROOT_ENV = "BTL_CONFIG_ROOT"
 DEFAULT_CONFIG_ROOT = "~/.config/btl"
 
 DEFAULT_IDLE_GAP_MIN = 15
-DEFAULT_EXCLUDES = ["node_modules", ".cache", "__pycache__", ".venv", ".git", ".hermes"]
+DEFAULT_EXCLUDES = ["node_modules", ".cache", "__pycache__", ".venv", ".git", ".hermes", "WALLETS"]
 DEFAULT_AGENTS = ["hermes", "opencode", "claude", "codex", "aider", "gemini", "cursor"]
 DEFAULT_HUMANS = ["code-server", "vscode", "code", "node", "python", "bash", "zsh", "ssh", "nvim", "vim", "tmux"]
 DEFAULT_SYSTEM = ["systemd", "systemd-tmpfiles", "rsync", "apt", "dpkg", "snapd", "flatpak"]
 DEFAULT_NON_BILLABLE = ["cron"]
-DEFAULT_BILLING = {"day_hours": 8, "increment_hours": 4, "monthly_target_days": 10}
+DEFAULT_BILLING = {"day_hours": 8, "increment_hours": 4}  # no target by default
 
 
 def config_root() -> Path:
@@ -168,6 +168,7 @@ exclude:
   - .venv
   - .git
   - .hermes
+  - WALLETS
 actors:
   agents:
     - hermes
@@ -208,7 +209,6 @@ process_tracking: true
 billing:
   day_hours: 8
   increment_hours: 4
-  monthly_target_days: 10
 autostart: true
 # log_dir: "~/.local/share/btl/logs"   # default: co-located per-watch logs/
 # report_dir: "~/.local/share/btl/reports"

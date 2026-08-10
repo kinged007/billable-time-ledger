@@ -102,7 +102,7 @@ class BtlEventHandler:
             return
         path = os.path.normpath(path)
         git = self._git_signal(path)
-        if self._skip(path) and not git:
+        if self._skip(path, git):
             return
         self.state.last_activity = time.time()
         if git:
@@ -141,13 +141,17 @@ class BtlEventHandler:
 
     # -- helpers ------------------------------------------------------
 
-    def _skip(self, path: str) -> bool:
+    def _skip(self, path: str, git: bool = False) -> bool:
         if path.startswith(self.config_root + os.sep):
             return True
         parts = path.split(os.sep)
         for ex in self.excludes:
             if ex in parts:
-                return True
+                # git signals survive only when the excluded part is .git
+                # itself (commit capture must keep working); any other
+                # excluded part (whole project roots like Sync/ under a
+                # broader watch, WALLETS, .hermes) is a hard exclude.
+                return not (git and ex == ".git")
         return False
 
     def _rel(self, path: str) -> str:
@@ -253,9 +257,9 @@ class Daemon:
     # -- lifecycle ----------------------------------------------------
 
     def start(self) -> None:
-        excludes = set(self.global_cfg.get("exclude", []))
         process_tracking = bool(self.global_cfg.get("process_tracking", True))
         for w in self.watches:
+            excludes = set(w["exclude"])   # per-watch, merged over global
             ledger = Ledger(w["log_dir"])
             state = WatchState(w, ledger)
             handler = BtlEventHandler(state, self.global_cfg, excludes,
@@ -312,6 +316,16 @@ class Daemon:
             + ", ".join(st.w["name"] for st in self.states)
         )
 
+    def default_state(self) -> WatchState:
+        """Best default for commands without --watch: the single watch,
+        else the one with an active session, else the first watch."""
+        if len(self.states) == 1:
+            return self.states[0]
+        for st in self.states:
+            if st.active:
+                return st
+        return self.states[0]
+
     def cmd_status(self) -> dict:
         out = {
             "running": True,
@@ -347,7 +361,7 @@ class Daemon:
             return {"ok": False, "error": "systemctl not available"}
 
     def cmd_note(self, text: str, watch: str | None) -> dict:
-        st = self.find_state(watch)
+        st = self.find_state(watch) if watch else self.default_state()
         if not st.active:
             st.last_activity = time.time()
             st.session_start = time.time()
@@ -368,7 +382,7 @@ class Daemon:
                 "note": text}
 
     def cmd_note_stop(self, watch: str | None) -> dict:
-        st = self.find_state(watch)
+        st = self.find_state(watch) if watch else self.default_state()
         if st.note_text is None:
             return {"ok": True, "note": None}
         st.ledger.append(
@@ -379,7 +393,7 @@ class Daemon:
         return {"ok": True, "watch": st.w["name"], "note_stopped": True}
 
     def cmd_session_stop(self, watch: str | None) -> dict:
-        st = self.find_state(watch)
+        st = self.find_state(watch) if watch else self.default_state()
         close_session(st, reason="manual")
         return {"ok": True, "watch": st.w["name"]}
 
