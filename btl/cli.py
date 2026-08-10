@@ -292,12 +292,17 @@ def cmd_sessions(args) -> int:
     if not sessions:
         print(f"no sessions for {day}")
         return 0
+    print(f"{'session':<14} {'window':<14} {'active':<8} {'span':<7} files")
     for s in sessions:
+        mark = " ●" if s.get("open") else ""
         print(
             f"#{s['id']} {s['start'][11:16]}–{s['end'][11:16]} "
-            f"{s['duration_min']:6.1f}m  {s.get('project', '')}  "
-            f"{len(s['files'])} files"
+            f"{s['active_min']:6.1f}m  {s['duration_min']:6.1f}m  "
+            f"{len(s['files']):>4}{mark}"
         )
+    total_a = sessionizer.total_active_min(sessions)
+    total_d = round(sum(s.get("duration_min", 0) for s in sessions), 1)
+    print(f"\ntotal: {total_a:.1f}m active / {total_d:.1f}m span (● = open)")
     return 0
 
 

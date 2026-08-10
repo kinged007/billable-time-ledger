@@ -41,16 +41,21 @@ def _parse_ts(ts: str) -> datetime:
         return datetime.now(timezone.utc)
 
 
-def build_sessions(log_dir: str, idle_gap_min: int | None = None) -> list[dict]:
+def build_sessions(log_dir: str, idle_gap_min: int | None = None,
+                   now: datetime | None = None) -> list[dict]:
     """Reconstruct sessions from session_start/session_end markers.
 
     Session markers carry the authoritative boundaries; if a session_end
-    is missing (crash), the session is closed at the last event time.
+    is missing (still active or crash), the session is closed at the last
+    event time. duration_min = span start→end (includes trailing idle gap
+    for idle-closed sessions); active_min = first→last event time (the
+    actual work window).
     """
     events = load_events(log_dir)
     sessions: list[dict] = []
     current: dict | None = None
     by_id: dict[int, dict] = {}
+    now = now or datetime.now(timezone.utc)
 
     for ev in events:
         etype = ev.get("type", "file")
@@ -67,16 +72,24 @@ def build_sessions(log_dir: str, idle_gap_min: int | None = None) -> list[dict]:
                 "actors": {},
                 "notes": [],
                 "commits": [],
+                "_first": ts,
+                "_last": ts,
+                "_end_ts": None,
+                "_open": True,
             }
             by_id[current["id"]] = current
             sessions.append(current)
         elif etype == "session_end" and current is not None and ev.get("session") == current["id"]:
             current["end"] = ev.get("ts")
+            current["_end_ts"] = _parse_ts(ev.get("ts", ""))
+            current["_open"] = False
             current["reason_end"] = ev.get("reason")
         elif etype == "note_start" and current is not None:
             current["notes"].append({"ts": ev.get("ts"), "text": ev.get("text")})
+            current["_last"] = max(current["_last"], ts)
         elif etype == "git_commit" and current is not None:
             current["commits"].append(ev)
+            current["_last"] = max(current["_last"], ts)
         elif etype == "file" and current is not None:
             current["events"] += 1
             p = ev.get("path", "")
@@ -84,17 +97,24 @@ def build_sessions(log_dir: str, idle_gap_min: int | None = None) -> list[dict]:
                 current["files"].add(p)
             act = ev.get("actor", "unknown")
             current["actors"][act] = current["actors"].get(act, 0) + 1
+            current["_last"] = max(current["_last"], ts)
 
     # Close dangling sessions at last event ts
     for s in sessions:
-        if s["end"] is None:
-            s["end"] = s.get("_last_ts") or s["start"]
-            s["reason_end"] = "crash"
+        if s["_end_ts"] is None:
+            s["end"] = s["_last"].isoformat()
+            s["_end_ts"] = s["_last"]
+            s["reason_end"] = "active" if s["_open"] else "crash"
         s["files"] = sorted(s["files"])
-        s["duration_min"] = round((_parse_ts(s["end"]) - _parse_ts(s["start"])).total_seconds() / 60, 1)
-        s.pop("_last_ts", None)
+        s["duration_min"] = round((s["_end_ts"] - s["_first"]).total_seconds() / 60, 1)
+        s["active_min"] = round((s["_last"] - s["_first"]).total_seconds() / 60, 1)
+        s["open"] = s["_open"]
+        s.pop("_first", None)
+        s.pop("_last", None)
+        s.pop("_end_ts", None)
+        s.pop("_open", None)
     return sessions
 
 
 def total_active_min(sessions: list[dict]) -> float:
-    return round(sum(s.get("duration_min", 0) for s in sessions), 1)
+    return round(sum(s.get("active_min", s.get("duration_min", 0)) for s in sessions), 1)

@@ -62,10 +62,12 @@ def daily_report(log_dir: str, day: str, billing: dict | None = None,
     if not sessions:
         lines.append("_No sessions._")
     for s in sessions:
+        mark = " (open)" if s.get("open") else ""
         lines.append(
             f"- **#{s['id']}** {s['start'][11:16]}–{s['end'][11:16]} "
-            f"({_hm(s['duration_min'])}) · {s.get('project', '')} · "
-            f"{len(s['files'])} files"
+            f"({_hm(s['active_min'])} active / {_hm(s['duration_min'])} span)"
+            f" · {s.get('project', '')} · "
+            f"{len(s['files'])} files{mark}"
         )
         for n in s["notes"]:
             lines.append(f"  - note: {n.get('text', '')}")
@@ -107,8 +109,9 @@ def monthly_report(log_dir: str, month: str, billing: dict | None = None,
     per_project: dict[str, float] = defaultdict(float)
     commits = [e for e in events if e.get("type") == "git_commit"]
     for s in sessions:
-        per_day[_day_of(s["start"])] += s["duration_min"]
-        per_project[s.get("project", "?")] += s["duration_min"]
+        active = s.get("active_min", s.get("duration_min", 0))
+        per_day[_day_of(s["start"])] += active
+        per_project[s.get("project", "?")] += active
 
     total = sessionizer.total_active_min(sessions)
     days_worked = len(per_day)
@@ -195,9 +198,11 @@ def export_markdown(log_dir: str, since: str | None = None, until: str | None = 
         "",
     ]
     for s in sessions:
+        mark = " (open)" if s.get("open") else ""
         lines.append(
             f"- **#{s['id']}** {s['start']} → {s['end']} "
-            f"({_hm(s['duration_min'])}) · {s.get('project', '')}"
+            f"({_hm(s['active_min'])} active / {_hm(s['duration_min'])} span)"
+            f" · {s.get('project', '')}{mark}"
         )
         for n in s["notes"]:
             lines.append(f"  - note: {n.get('text', '')}")
