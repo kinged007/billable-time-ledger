@@ -28,11 +28,52 @@ def socket_path(root, socket: str | None = None) -> str:
 
 def send_request(root, payload: dict, timeout: float = 3.0,
                  sock_path: str | None = None) -> dict:
-    """Send one request to the daemon. Raises ConnectionError if not running."""
+    """Send one request to the daemon. Raises ConnectionError if not running.
+
+    When no explicit path is given, tries (in order): the configured
+    socket_path, the euid-default socket, then the root daemon's
+    /run/btl/btl.sock — so the CLI works whether the user or root
+    daemon is live.
+    """
+    candidates = _candidate_sockets(root, sock_path)
+    last_err: Exception | None = None
+    for cand in candidates:
+        try:
+            return _send_one(cand, payload, timeout)
+        except (ConnectionError, FileNotFoundError) as e:
+            last_err = e
+            continue
+    raise ConnectionError(
+        f"btl daemon not running (tried {', '.join(candidates)})"
+    )
+
+
+def _candidate_sockets(root, sock_path: str | None) -> list[str]:
+    if sock_path:
+        return [sock_path]
+    out: list[str] = []
+    try:
+        from btl import config as cfg
+        c = cfg.resolved_socket_path(root)
+        if c:
+            out.append(c)
+    except Exception:
+        pass
+    out.append(socket_path(root, None))
+    if os.geteuid() != 0:
+        out.append("/run/btl/btl.sock")
+    seen: list[str] = []
+    for p in out:
+        if p not in seen:
+            seen.append(p)
+    return seen
+
+
+def _send_one(sock_path: str, payload: dict, timeout: float) -> dict:
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(timeout)
     try:
-        sock.connect(socket_path(root, sock_path))
+        sock.connect(sock_path)
         sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
         buf = b""
         while not buf.endswith(b"\n"):
@@ -44,7 +85,7 @@ def send_request(root, payload: dict, timeout: float = 3.0,
             raise ConnectionError("daemon returned empty response")
         return json.loads(buf.decode("utf-8"))
     except FileNotFoundError:
-        raise ConnectionError("btl daemon not running (socket missing)")
+        raise
     finally:
         sock.close()
 

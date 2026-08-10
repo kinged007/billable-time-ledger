@@ -289,11 +289,18 @@ def cmd_setup_root(args) -> int:
     unit = _setup_root_unit(sudo_user, btl_bin, cfg_root, pw.pw_uid, pw.pw_gid)
     Path(unit_path).write_text(unit, encoding="utf-8")
     subprocess.run(["systemctl", "daemon-reload"], check=False)
-    # stop the user-level daemon so only the root one runs
-    subprocess.run(
-        ["systemctl", "--user", "disable", "--now", "btl.service"],
-        check=False,
+    # stop the user-level daemon so only the root one runs. systemctl --user
+    # needs the user session env — run it as the target user with
+    # XDG_RUNTIME_DIR set (root can sudo to the user without a password).
+    r = subprocess.run(
+        ["sudo", "-u", sudo_user, "env",
+         f"XDG_RUNTIME_DIR=/run/user/{pw.pw_uid}",
+         "systemctl", "--user", "disable", "--now", "btl.service"],
+        capture_output=True, text=True,
     )
+    if r.returncode != 0:
+        print(f"warning: could not stop user daemon ({r.returncode}):")
+        print("  run manually: systemctl --user stop btl.service")
     subprocess.run(
         ["systemctl", "enable", "--now", "btl-root.service"], check=False,
     )

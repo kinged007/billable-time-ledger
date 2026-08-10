@@ -60,10 +60,11 @@ EVENT_MASK = (
 AT_FDCWD = -100
 O_PATH = os.O_PATH  # Python exposes it on Linux
 
-# info record types (fanotify_event_info_type)
+# info record types (fanotify_event_info_type). NOTE: renumbered in
+# newer kernels — DFID_NAME=2, DFID=3 (older kernels had them swapped).
 INFO_FID = 1
-INFO_DFID = 2
-INFO_DFID_NAME = 3
+INFO_DFID_NAME = 2
+INFO_DFID = 3
 
 # struct fanotify_event_metadata: u32 event_len, u8 vers, u8 reserved,
 #   u16 metadata_len, u64 mask, s32 fd, s32 pid  (24 bytes, no padding)
@@ -114,7 +115,9 @@ class FanotifyBackend(Backend):
             raise OSError(err, f"fanotify_init failed: {errno.errorcode.get(err, err)}")
         self._fd = fd
         st = os.stat(self.root)
-        mfd = os.open(self.root, O_PATH)
+        # open_by_handle_at rejects O_PATH fds (EBADF) — it needs a real
+        # readable mount fd (O_RDONLY|O_DIRECTORY).
+        mfd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
         self._dev_fds[st.st_dev] = mfd
         ret = self._libc.fanotify_mark(
             fd, FAN_MARK_ADD | FAN_MARK_FILESYSTEM, EVENT_MASK,
@@ -236,10 +239,14 @@ class FanotifyBackend(Backend):
                     continue
                 if hb > 0 and pos + 20 + hb <= pos + ilen:
                     fbytes = bytes(buf[pos + 20: pos + 20 + hb])
-                    if itype == INFO_DFID_NAME:
+                    # DFID_NAME carries the parent-dir handle + entry name;
+                    # FID/DFID carry a bare handle. Some kernels report the
+                    # name on type 2 (DFID_NAME), so treat any record with
+                    # trailing bytes as dir+name.
+                    if itype == INFO_DFID_NAME or (itype in (INFO_FID, INFO_DFID) and pos + 20 + hb < pos + ilen):
                         dir_handle = (hb, ht, fbytes)
                         raw = bytes(buf[pos + 20 + hb: pos + ilen]).rstrip(b"\x00")
-                        name = raw.decode("utf-8", "replace")
+                        name = raw.decode("utf-8", "replace") if raw else None
                     elif dir_handle is None and name is None:
                         fh = (hb, ht, fbytes)
             pos += ilen
