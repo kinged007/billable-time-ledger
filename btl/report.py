@@ -50,7 +50,7 @@ def daily_report(log_dir: str, day: str, billing: dict | None = None,
     lines = [
         f"# btl daily report — {day}" + (f" · watch: {watch}" if watch else ""),
         "",
-        f"- **Active time**: {_hm(active)} ({len(sessions)} sessions)",
+        f"- **Billable time** (session spans): {_hm(active)} ({len(sessions)} sessions)",
         f"- **Billable units** (increment {inc:g}h): {_billing_units(active, inc)}",
         f"- **Files touched**: {len(files)}",
         f"- **Commits**: {len(commits)}",
@@ -63,9 +63,12 @@ def daily_report(log_dir: str, day: str, billing: dict | None = None,
         lines.append("_No sessions._")
     for s in sessions:
         mark = " (open)" if s.get("open") else ""
+        extra = ""
+        if s.get("active_min") is not None:
+            extra = f" / {_hm(s['active_min'])} writing"
         lines.append(
             f"- **#{s['id']}** {s['start'][11:16]}–{s['end'][11:16]} "
-            f"({_hm(s['active_min'])} active / {_hm(s['duration_min'])} span)"
+            f"({_hm(s['duration_min'])} span{extra})"
             f" · {s.get('project', '')} · "
             f"{len(s['files'])} files{mark}"
         )
@@ -109,9 +112,9 @@ def monthly_report(log_dir: str, month: str, billing: dict | None = None,
     per_project: dict[str, float] = defaultdict(float)
     commits = [e for e in events if e.get("type") == "git_commit"]
     for s in sessions:
-        active = s.get("active_min", s.get("duration_min", 0))
-        per_day[_day_of(s["start"])] += active
-        per_project[s.get("project", "?")] += active
+        span = s.get("duration_min", 0)   # billable: full session block
+        per_day[_day_of(s["start"])] += span
+        per_project[s.get("project", "?")] += span
 
     total = sessionizer.total_active_min(sessions)
     days_worked = len(per_day)
@@ -121,7 +124,7 @@ def monthly_report(log_dir: str, month: str, billing: dict | None = None,
     lines = [
         f"# btl monthly report — {month}" + (f" · watch: {watch}" if watch else ""),
         "",
-        f"- **Active time**: {_hm(total)}",
+        f"- **Billable time** (session spans): {_hm(total)}",
         f"- **Days worked**: {days_worked}",
         f"- **Full days equivalent** ({day_hours:g}h days): {full_days:.1f}",
         f"- **Billable units** ({inc:g}h): {units}",
@@ -192,16 +195,19 @@ def export_markdown(log_dir: str, since: str | None = None, until: str | None = 
         "# btl export",
         "",
         f"- Sessions: {len(sessions)}",
-        f"- Active: {_hm(sessionizer.total_active_min(sessions))}",
+        f"- Billable (session spans): {_hm(sessionizer.total_active_min(sessions))}",
         "",
         "## Sessions",
         "",
     ]
     for s in sessions:
         mark = " (open)" if s.get("open") else ""
+        extra = ""
+        if s.get("active_min") is not None:
+            extra = f" / {_hm(s['active_min'])} writing"
         lines.append(
             f"- **#{s['id']}** {s['start']} → {s['end']} "
-            f"({_hm(s['active_min'])} active / {_hm(s['duration_min'])} span)"
+            f"({_hm(s['duration_min'])} span{extra})"
             f" · {s.get('project', '')}{mark}"
         )
         for n in s["notes"]:

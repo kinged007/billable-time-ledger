@@ -117,4 +117,11 @@ def build_sessions(log_dir: str, idle_gap_min: int | None = None,
 
 
 def total_active_min(sessions: list[dict]) -> float:
-    return round(sum(s.get("active_min", s.get("duration_min", 0)) for s in sessions), 1)
+    """Billable minutes = session span (start→end), the full session block.
+
+    A session spans from first activity to when it closed (idle gap,
+    manual stop, or daemon stop). All time inside the block counts —
+    thinking, planning, discussion and gaps between file writes —
+    provided activity kept the session alive within the idle gap.
+    """
+    return round(sum(s.get("duration_min", 0) for s in sessions), 1)
