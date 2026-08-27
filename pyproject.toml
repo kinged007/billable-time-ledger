@@ -18,3 +18,11 @@ btl-daemon = "btl.daemon_main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["btl"]
+
+[tool.uv]
+# Always use a uv-downloaded, self-contained interpreter — never link the venv
+# to a system /usr/bin/python3. A distro apt upgrade (e.g. python3.12 -> 3.14)
+# repoints that system symlink and silently breaks any venv built against it
+# (site-packages lives under lib/pythonX.Y/ — a version bump strands it).
+# See .python-version for the pinned version.
+python-preference = "managed"

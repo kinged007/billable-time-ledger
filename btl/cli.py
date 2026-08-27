@@ -483,7 +483,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Billable Time Ledger — automated file-level activity logger",
     )
     p.add_argument("--version", action="version", version=f"btl {__version__}")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    sub = p.add_subparsers(dest="cmd")
 
     sp = sub.add_parser("watch", help="manage watches")
     wsub = sp.add_subparsers(dest="watch_cmd", required=True)
@@ -560,6 +560,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.cmd is None:
+        parser.print_help()
+        return 0
     return args.func(args)
 
 
