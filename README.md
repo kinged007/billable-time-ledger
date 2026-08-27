@@ -25,6 +25,20 @@ The operator bills client projects on a time & materials basis in half-day incre
 ## Install
 
 ```bash
+make install
+```
+
+This builds `.venv` (pinned to a uv-managed Python — see `.python-version` —
+so a distro Python upgrade can't strand it), symlinks `btl`/`btl-daemon` into
+`~/.local/bin`, and wires up autostart: a native systemd user unit / launchd
+agent when one is available, otherwise a `~/.bashrc` hook (see
+`scripts/btl-autostart.sh`) that starts the daemon and prints its status on
+every new shell. `make uninstall` reverses it (config in `~/.config/btl` is
+left alone).
+
+Equivalent manual steps, if you'd rather not use `make`:
+
+```bash
 uv venv .venv
 uv pip install --python .venv/bin/python -e .
 ```
