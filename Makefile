@@ -13,7 +13,7 @@ install: venv link-bin daemon
 	@echo "btl installed."
 	@echo ""
 	@echo "Next steps:"
-	@echo "  btl watch add <name> <path>          # start tracking a project folder"
+	@echo "  btl watch add <name> <path>...       # track one or more project folders"
 	@echo "  btl watch list                       # see configured watches"
 	@echo "  btl status                           # daemon health"
 	@echo "  btl report --day $$(date +%F)             # today's report"

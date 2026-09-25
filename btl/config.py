@@ -4,6 +4,7 @@ Layout (all under the user config root, fully repo-decoupled):
 
     ~/.config/btl/
     ├── btl.yaml                  # global daemon defaults
+    ├── watcher-summary.json     # daemon-generated totals for shell startup
     └── watches/
         └── <watch-name>/
             ├── watch.yaml        # this watch's own config (root, excludes, ...)
@@ -24,6 +25,7 @@ import yaml
 
 CONFIG_ROOT_ENV = "BTL_CONFIG_ROOT"
 DEFAULT_CONFIG_ROOT = "~/.config/btl"
+SUMMARY_FILENAME = "watcher-summary.json"
 
 DEFAULT_IDLE_GAP_MIN = 15
 DEFAULT_EXCLUDES = ["node_modules", ".cache", "__pycache__", ".venv", ".git", ".hermes", "WALLETS"]
@@ -40,6 +42,10 @@ def config_root() -> Path:
     if env:
         return Path(env).expanduser().resolve()
     return Path(DEFAULT_CONFIG_ROOT).expanduser().resolve()
+
+
+def summary_path(root: Path | None = None) -> Path:
+    return (root or config_root()) / SUMMARY_FILENAME
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -120,20 +126,28 @@ def watch_dir(root: Path | None, name: str) -> Path:
 def load_watch_config(name: str, global_cfg: dict | None = None, root: Path | None = None) -> dict:
     """Load a single watch's config, merged over global defaults.
 
-    Requires the watch to exist (has watch.yaml with a root).
+    Requires the watch to exist (has watch.yaml with at least one root).
     """
     root = root or config_root()
     g = global_cfg or load_global_config(root)
     wdir = watch_dir(root, name)
     raw = _load_yaml(wdir / "watch.yaml")
 
-    watch_root = raw.get("root") or raw.get("path")
-    if not watch_root:
-        raise ValueError(f"watch '{name}' has no root configured in {wdir / 'watch.yaml'}")
+    watch_roots = raw.get("roots")
+    if watch_roots is None:
+        watch_root = raw.get("root") or raw.get("path")
+        watch_roots = [watch_root] if watch_root else []
+    if (not isinstance(watch_roots, list) or not watch_roots
+            or not all(isinstance(root, str) and root for root in watch_roots)):
+        raise ValueError(f"watch '{name}' has no valid roots configured in {wdir / 'watch.yaml'}")
+    roots = [str(Path(root).expanduser().resolve()) for root in watch_roots]
+    if len(set(roots)) != len(roots):
+        raise ValueError(f"watch '{name}' has duplicate roots configured in {wdir / 'watch.yaml'}")
 
     base = {
         "name": name,
-        "root": str(Path(watch_root).expanduser().resolve()),
+        "root": os.path.commonpath(roots),
+        "roots": roots,
         "project": raw.get("project", name),       # default: watch name = project
         "git": raw.get("git", True),
         "idle_gap_min": raw.get("idle_gap_min", g["idle_gap_min"]),

@@ -19,6 +19,7 @@ The operator bills client projects on a time & materials basis in half-day incre
 - **Reports** — daily + monthly markdown, aligned to billing increments (half-days, day target)
 - **Agent-readable export** — `btl export --format json|md` — point any agent at it for narrative/invoice reports
 - **Multi-watch** — one daemon, many watches (one per project folder), each with its own config + logs
+- **Cached startup summary** — the daemon refreshes `~/.config/btl/watcher-summary.json`; new terminals read it without scanning ledgers
 - **Autostart** — systemd user service (Linux) / launchd (macOS), `btl autostart on|off`
 - **Process attribution** — Linux: `sudo btl setup-root` enables a root fanotify daemon that records *which process* made each change (hermes, cron, editor...). Cron/systemd-timer activity is detected and tagged `cron` — kept in the ledger but excluded from billable time by default (`actors.non_billable`)
 
@@ -46,8 +47,9 @@ uv pip install --python .venv/bin/python -e .
 ## Quick start
 
 ```bash
-# add a watch (monitor a folder)
+# add a watch (monitor one or more folders)
 btl watch add workspace ~/workspace
+btl watch add tenant-flex path/to/tenant-flex path/to/tenant-flex-2
 
 # start the daemon (or: btl autostart on)
 btl start
@@ -65,7 +67,7 @@ btl export --since 2026-08-10 --until 2026-08-17 --format md
 
 ## Config
 
-`~/.config/btl/btl.yaml` (global defaults) + `~/.config/btl/watches/<name>/watch.yaml` (per watch). `BTL_CONFIG_ROOT` overrides the root. Logs co-locate per watch: `~/.config/btl/watches/<name>/logs/YYYY-MM-DD.jsonl`.
+`~/.config/btl/btl.yaml` (global defaults) + `~/.config/btl/watches/<name>/watch.yaml` (per watch). `BTL_CONFIG_ROOT` overrides the root. A watch can contain multiple roots and shares one session and ledger across them. Reports and exports attribute paths to the most specific configured watch without rewriting ledgers; overlapping historical sessions split their combined billable span by each watch's active minutes. Logs co-locate per watch: `~/.config/btl/watches/<name>/logs/YYYY-MM-DD.jsonl`.
 
 ```yaml
 # ~/.config/btl/btl.yaml
@@ -95,9 +97,10 @@ autostart: true
 
 ```
 btl status                    # daemon health
+btl summary                   # cached all-time billable totals per watch
 btl start | stop | restart
 btl autostart on|off
-btl watch add <name> <root> [--idle-gap N] [--no-git]
+btl watch add <name> <root>... [--idle-gap N] [--no-git]
 btl watch list | remove <name>
 btl note "text"               # attach to current session
 btl note stop

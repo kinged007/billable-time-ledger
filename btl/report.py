@@ -12,6 +12,18 @@ def _as_list(log_dir) -> list[str]:
     return [log_dir] if isinstance(log_dir, str) else list(log_dir)
 
 
+def _load_view(log_dir, watches, selected, non_billable):
+    if watches is not None:
+        return sessionizer.load_owned_view(
+            watches, selected=selected, non_billable=non_billable,
+        )
+    log_dirs = _as_list(log_dir)
+    return (
+        sessionizer.load_events_multi(log_dirs),
+        sessionizer.build_sessions_multi(log_dirs, non_billable=non_billable),
+    )
+
+
 def _day_of(ts: str) -> str:
     try:
         return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(
@@ -44,15 +56,15 @@ def _actor_lines(actors: Counter, non_billable: set[str]) -> list[str]:
 
 
 def daily_report(log_dir: str | list[str], day: str, billing: dict | None = None,
-                 watch: str = "", non_billable: set[str] | None = None) -> str:
+                 watch: str = "", non_billable: set[str] | None = None,
+                 watches: list[dict] | None = None,
+                 selected: str | None = None) -> str:
     billing = billing or {}
     inc = float(billing.get("increment_hours", 4))
     non_billable = non_billable or set()
-    log_dirs = _as_list(log_dir)
-    events = [e for e in sessionizer.load_events_multi(log_dirs)
-              if _day_of(e.get("ts", "")) == day]
-    sessions = [s for s in sessionizer.build_sessions_multi(
-        log_dirs, non_billable=non_billable) if _day_of(s["start"]) == day]
+    events, all_sessions = _load_view(log_dir, watches, selected, non_billable)
+    events = [e for e in events if _day_of(e.get("ts", "")) == day]
+    sessions = [s for s in all_sessions if _day_of(s["start"]) == day]
     sessions.sort(key=lambda s: s["start"])
     files = Counter()
     commits = []
@@ -127,7 +139,9 @@ def daily_report(log_dir: str | list[str], day: str, billing: dict | None = None
 
 
 def monthly_report(log_dir: str | list[str], month: str, billing: dict | None = None,
-                   watch: str = "", non_billable: set[str] | None = None) -> str:
+                   watch: str = "", non_billable: set[str] | None = None,
+                   watches: list[dict] | None = None,
+                   selected: str | None = None) -> str:
     """month = 'YYYY-MM'"""
     billing = billing or {}
     inc = float(billing.get("increment_hours", 4))
@@ -136,12 +150,9 @@ def monthly_report(log_dir: str | list[str], month: str, billing: dict | None = 
     day_hours = float(billing.get("day_hours", 8))
     non_billable = non_billable or set()
 
-    log_dirs = _as_list(log_dir)
-    events = [e for e in sessionizer.load_events_multi(log_dirs)
-              if e.get("ts", "").startswith(month)]
-    sessions = [s for s in sessionizer.build_sessions_multi(
-        log_dirs, non_billable=non_billable)
-                if s["start"].startswith(month)]
+    events, all_sessions = _load_view(log_dir, watches, selected, non_billable)
+    events = [e for e in events if e.get("ts", "").startswith(month)]
+    sessions = [s for s in all_sessions if s["start"].startswith(month)]
     sessions.sort(key=lambda s: s["start"])
 
     per_day: dict[str, float] = defaultdict(float)
@@ -218,17 +229,22 @@ def _norm_bound(v: str | None, end_of_day: bool) -> str | None:
 
 def export_json(log_dir: str | list[str], since: str | None = None, until: str | None = None,
                 include_raw: bool = False,
-                non_billable: set[str] | None = None) -> str:
+                non_billable: set[str] | None = None,
+                watches: list[dict] | None = None,
+                selected: str | None = None) -> str:
     import json
     since = _norm_bound(since, end_of_day=False)
     until = _norm_bound(until, end_of_day=True)
-    log_dirs = _as_list(log_dir)
-    events = sessionizer.load_events_multi(log_dirs)
+    events, sessions = _load_view(log_dir, watches, selected, non_billable)
     if since:
         events = [e for e in events if e.get("ts", "") >= since]
     if until:
         events = [e for e in events if e.get("ts", "") <= until]
-    sessions = sessionizer.build_sessions_multi(log_dirs, non_billable=non_billable)
+    sessions = [
+        session for session in sessions
+        if (not since or session["start"] >= since)
+        and (not until or session["end"] <= until)
+    ]
     if include_raw:
         return json.dumps({"events": events, "sessions": sessions}, indent=2)
     return json.dumps({"sessions": sessions}, indent=2)
@@ -236,18 +252,21 @@ def export_json(log_dir: str | list[str], since: str | None = None, until: str |
 
 def export_markdown(log_dir: str | list[str], since: str | None = None, until: str | None = None,
                     include_raw: bool = False,
-                    non_billable: set[str] | None = None) -> str:
+                    non_billable: set[str] | None = None,
+                    watches: list[dict] | None = None,
+                    selected: str | None = None) -> str:
     since = _norm_bound(since, end_of_day=False)
     until = _norm_bound(until, end_of_day=True)
-    log_dirs = _as_list(log_dir)
-    events = sessionizer.load_events_multi(log_dirs)
+    events, all_sessions = _load_view(log_dir, watches, selected, non_billable)
     if since:
         events = [e for e in events if e.get("ts", "") >= since]
     if until:
         events = [e for e in events if e.get("ts", "") <= until]
-    sessions = [s for s in sessionizer.build_sessions_multi(
-        log_dirs, non_billable=non_billable)
-                if (not since or s["start"] >= since) and (not until or s["end"] <= until)]
+    sessions = [
+        session for session in all_sessions
+        if (not since or session["start"] >= since)
+        and (not until or session["end"] <= until)
+    ]
     lines = [
         "# btl export",
         "",

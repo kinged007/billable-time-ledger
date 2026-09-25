@@ -1,4 +1,4 @@
-"""btl daemon: runs one watchdog observer per configured watch.
+"""btl daemon: runs watchdog observers for configured watch roots.
 
 Responsibilities per watch:
   - filter file events (WRITE/CREATE/DELETE/MOVED), exclude noise
@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -29,6 +30,7 @@ from btl import config as cfg
 from btl.backends import create_backend
 from btl.ledger import Ledger
 from btl.procattr import ActorClassifier, ProcessInspector
+from btl.summary import write_summary
 
 # File events we keep (backend emits only created/modified/deleted/moved;
 # reads are never reported — FR-3 naturally satisfied)
@@ -36,6 +38,7 @@ KEEP_EVENTS = {"created", "modified", "deleted", "moved"}
 
 SESSION_IDLE_REASON = "idle_gap"
 SESSION_NOTE_REASON = "note"
+SUMMARY_REFRESH_SECONDS = 60
 
 
 def _now_iso() -> str:
@@ -218,6 +221,29 @@ class IdleTimer(threading.Thread):
             time.sleep(2)
 
 
+class SummaryUpdater(threading.Thread):
+    """Refresh the shell summary without involving terminal readers."""
+
+    def __init__(self, root: Path, watches: list[dict]):
+        super().__init__(daemon=True, name="btl-summary-updater")
+        self.root = root
+        self.watches = watches
+        self._stop = threading.Event()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _update(self) -> None:
+        try:
+            write_summary(self.watches, self.root)
+        except Exception as exc:  # keep tracking alive if the cache cannot be written
+            print(f"btl: summary update failed: {exc}", file=sys.stderr)
+
+    def run(self) -> None:
+        while not self._stop.wait(SUMMARY_REFRESH_SECONDS):
+            self._update()
+
+
 def close_session(state: WatchState, reason: str):
     """Public helper (used by CLI via IPC): close active session/note."""
     st = state
@@ -252,6 +278,7 @@ class Daemon:
         self.backends = []
         self.ledgers: list[Ledger] = []
         self.idle_timer: IdleTimer | None = None
+        self.summary_updater: SummaryUpdater | None = None
         self._stop = threading.Event()
 
     # -- lifecycle ----------------------------------------------------
@@ -264,25 +291,38 @@ class Daemon:
             state = WatchState(w, ledger)
             handler = BtlEventHandler(state, self.global_cfg, excludes,
                                       str(self.root), process_tracking)
-            backend = create_backend(
-                w["root"], excludes, str(self.root), handler.on_event,
-                process_tracking=process_tracking,
-            )
-            backend.start()
-            state.backend_kind = backend.kind
+            backends = [
+                create_backend(
+                    root, excludes, str(self.root), handler.on_event,
+                    process_tracking=process_tracking,
+                )
+                for root in w["roots"]
+            ]
+            for backend in backends:
+                backend.start()
+            state.backend_kind = backends[0].kind
             self.states.append(state)
             self.ledgers.append(ledger)
-            self.backends.append(backend)
+            self.backends.extend(backends)
             state.last_activity = time.time()  # don't immediately idle
-            print(f"watch '{w['name']}' → backend {backend.kind} "
-                  f"(root {w['root']})")
+            print(f"watch '{w['name']}' → backend {state.backend_kind} "
+                  f"(roots {', '.join(w['roots'])})")
         self.idle_timer = IdleTimer(self.states)
         self.idle_timer.start()
+        try:
+            write_summary(self.watches, self.root)
+        except Exception as exc:
+            print(f"btl: summary update failed: {exc}", file=sys.stderr)
+        self.summary_updater = SummaryUpdater(self.root, self.watches)
+        self.summary_updater.start()
 
     def stop(self) -> None:
         self._stop.set()
         if self.idle_timer:
             self.idle_timer.stop()
+        if self.summary_updater:
+            self.summary_updater.stop()
+            self.summary_updater.join(timeout=2)
         for b in self.backends:
             b.stop()
         for st in self.states:
@@ -337,6 +377,7 @@ class Daemon:
             out["watches"].append({
                 "name": st.w["name"],
                 "root": st.root,
+                "roots": st.w["roots"],
                 "project": st.w["project"],
                 "backend": st.backend_kind,
                 "active_session": st.active,

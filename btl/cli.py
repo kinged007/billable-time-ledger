@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from btl import __version__, config as cfg, ipc, report, sessionizer
+from btl.summary import format_summary, read_summary
 
 DAEMON_MODULE = "btl.daemon_main"
 
@@ -35,12 +36,22 @@ def _find_watch_logdirs(name: str | None = None) -> list[dict]:
     return watches
 
 
+def _all_watch_configs(name: str | None = None) -> list[dict]:
+    watches = _find_watch_logdirs()
+    if name:
+        _find_watch_logdirs(name)
+    return watches
+
+
 # -- watch management ------------------------------------------------
 
 def cmd_watch_add(args) -> int:
-    root = Path(args.root).expanduser().resolve()
-    if not root.is_dir():
-        sys.exit(f"error: root does not exist: {root}")
+    roots = [Path(value).expanduser().resolve() for value in args.roots]
+    for root in roots:
+        if not root.is_dir():
+            sys.exit(f"error: root does not exist: {root}")
+    if len(set(roots)) != len(roots):
+        sys.exit("error: roots must be unique")
     cfg_root = cfg.config_root()
     cfg.ensure_layout(cfg_root)
     wdir = cfg_root / "watches" / args.name
@@ -50,7 +61,8 @@ def cmd_watch_add(args) -> int:
     (wdir / "logs").mkdir(exist_ok=True)
     lines = [
         f"# watch: {args.name}",
-        f"root: \"{root}\"",
+        "roots:",
+        *(f"  - \"{root}\"" for root in roots),
     ]
     if args.project:
         lines.append(f"project: \"{args.project}\"")
@@ -61,7 +73,7 @@ def cmd_watch_add(args) -> int:
     lines.append("")
     (wdir / "watch.yaml").write_text("\n".join(lines), encoding="utf-8")
     print(f"added watch '{args.name}' → {wdir}")
-    print(f"  root: {root}")
+    print(f"  roots: {', '.join(str(root) for root in roots)}")
     print("restart the daemon to pick it up: btl restart")
     return 0
 
@@ -72,7 +84,8 @@ def cmd_watch_list(args) -> int:
         print("no watches configured")
         return 0
     for w in watches:
-        print(f"{w['name']:<20} {w['root']:<50} project={w['project']} idle={w['idle_gap_min']}m")
+        roots = ", ".join(w["roots"])
+        print(f"{w['name']:<20} {roots:<50} project={w['project']} idle={w['idle_gap_min']}m")
     return 0
 
 
@@ -102,8 +115,17 @@ def cmd_status(args) -> int:
     for w in resp["watches"]:
         note = f" · note: {w['note']}" if w["note"] else ""
         sess = "ACTIVE" if w["active_session"] else "idle"
+        roots = ", ".join(w.get("roots") or [w["root"]])
         print(f"  {w['name']:<18} {sess:<8} backend={w.get('backend', '?'):<9} "
-              f"events={w['events_logged']} root={w['root']}{note}")
+              f"events={w['events_logged']} roots={roots}{note}")
+    return 0
+
+
+def cmd_summary(args) -> int:
+    data = read_summary()
+    if data:
+        for line in format_summary(data):
+            print(line)
     return 0
 
 
@@ -374,19 +396,21 @@ def cmd_notes(args) -> int:
 # -- reports ----------------------------------------------------------
 
 def cmd_report(args) -> int:
-    watches = _find_watch_logdirs(args.watch)
+    watches = _all_watch_configs(args.watch)
     logdirs = [w["log_dir"] for w in watches]
-    wname = ", ".join(w["name"] for w in watches)
+    wname = args.watch or ", ".join(w["name"] for w in watches)
     g = cfg.load_global_config()
     billing = dict(g.get("billing", {}))
     nb = cfg.non_billable_actors()
     if args.day:
         out = report.daily_report(logdirs, args.day, billing, watch=wname,
-                                  non_billable=nb)
+                                  non_billable=nb, watches=watches,
+                                  selected=args.watch)
     else:
         month = args.month or _this_month()
         out = report.monthly_report(logdirs, month, billing, watch=wname,
-                                    non_billable=nb)
+                                    non_billable=nb, watches=watches,
+                                    selected=args.watch)
     if args.out:
         Path(args.out).write_text(out, encoding="utf-8")
         print(f"wrote {args.out}")
@@ -396,12 +420,13 @@ def cmd_report(args) -> int:
 
 
 def cmd_sessions(args) -> int:
-    watches = _find_watch_logdirs(args.watch)
-    logdirs = [w["log_dir"] for w in watches]
+    watches = _all_watch_configs(args.watch)
     day = args.day or _today()
-    sessions = [s for s in sessionizer.build_sessions_multi(
-        logdirs, non_billable=cfg.non_billable_actors())
-        if s["start"].startswith(day)]
+    _, sessions = sessionizer.load_owned_view(
+        watches, selected=args.watch,
+        non_billable=cfg.non_billable_actors(),
+    )
+    sessions = [s for s in sessions if s["start"].startswith(day)]
     if not sessions:
         print(f"no sessions for {day}")
         return 0
@@ -425,17 +450,19 @@ def cmd_sessions(args) -> int:
 
 
 def cmd_export(args) -> int:
-    watches = _find_watch_logdirs(args.watch)
+    watches = _all_watch_configs(args.watch)
     logdirs = [w["log_dir"] for w in watches]
     fmt = args.format or "json"
     nb = cfg.non_billable_actors()
     if fmt == "json":
         out = report.export_json(logdirs, args.since, args.until,
-                                 include_raw=args.include_raw, non_billable=nb)
+                                 include_raw=args.include_raw, non_billable=nb,
+                                 watches=watches, selected=args.watch)
     else:
         out = report.export_markdown(logdirs, args.since, args.until,
                                      include_raw=args.include_raw,
-                                     non_billable=nb)
+                                     non_billable=nb, watches=watches,
+                                     selected=args.watch)
     if args.out:
         Path(args.out).write_text(out, encoding="utf-8")
         print(f"wrote {args.out}")
@@ -487,9 +514,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("watch", help="manage watches")
     wsub = sp.add_subparsers(dest="watch_cmd", required=True)
-    wa = wsub.add_parser("add", help="add a watch (root folder)")
+    wa = wsub.add_parser("add", help="add a watch (one or more root folders)")
     wa.add_argument("name")
-    wa.add_argument("root")
+    wa.add_argument("roots", nargs="+")
     wa.add_argument("--project", default=None)
     wa.add_argument("--idle-gap", type=float, default=None, dest="idle_gap")
     wa.add_argument("--no-git", action="store_true", dest="no_git")
@@ -501,6 +528,7 @@ def build_parser() -> argparse.ArgumentParser:
     wr.set_defaults(func=cmd_watch_remove)
 
     sub.add_parser("status", help="daemon status").set_defaults(func=cmd_status)
+    sub.add_parser("summary", help="print cached per-watch totals").set_defaults(func=cmd_summary)
     sub.add_parser("start", help="start daemon").set_defaults(func=cmd_start)
     sub.add_parser("stop", help="stop daemon").set_defaults(func=cmd_stop)
     sub.add_parser("restart", help="restart daemon (reload config)").set_defaults(func=cmd_restart)
