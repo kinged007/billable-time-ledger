@@ -1,5 +1,7 @@
 # btl — Billable Time Ledger
 
+![CI](https://github.com/kinged007/billable-time-ledger/actions/workflows/ci.yml/badge.svg)
+
 Automated file-level **log timer** for Unix systems (Linux + macOS). Records file writes, git commits and working notes into per-watch JSONL ledgers, then produces daily/monthly reports and agent-readable exports for billing.
 
 - **Repo**: this project
@@ -49,7 +51,7 @@ uv pip install --python .venv/bin/python -e .
 ```bash
 # add a watch (monitor one or more folders)
 btl watch add workspace ~/workspace
-btl watch add tenant-flex path/to/tenant-flex path/to/tenant-flex-2
+btl watch add my-project path/to/project-a path/to/project-b
 
 # start the daemon (or: btl autostart on)
 btl start
@@ -114,7 +116,8 @@ btl config show | edit
 ## Development
 
 - venv: `.venv/bin/python`; package: `btl/`; entrypoints `btl` + `btl-daemon`
-- Tests: `python -m compileall btl && python /tmp/btl_test_02.py` (process attribution, no root needed)
+- Tests: `pip install -e . && pytest -q`
+- Lint: `ruff check .` · Type check: `mypy btl --ignore-missing-imports`
 
 ## Process attribution (Linux, optional)
 

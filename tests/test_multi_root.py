@@ -15,14 +15,14 @@ class MultiRootWatchTests(unittest.TestCase):
     def test_cli_writes_multiple_roots(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
-            roots = [base / "one" / "tenant-flex", base / "two" / "tenant-flex-2"]
+            roots = [base / "one" / "demo-project", base / "two" / "demo-project-2"]
             for root in roots:
                 root.mkdir(parents=True)
             config_root = base / "config"
 
             with patch.dict(os.environ, {"BTL_CONFIG_ROOT": str(config_root)}):
                 args = cli.build_parser().parse_args(
-                    ["watch", "add", "tenant-flex", *map(str, roots)]
+                    ["watch", "add", "demo-project", *map(str, roots)]
                 )
                 with redirect_stdout(io.StringIO()):
                     cli.cmd_watch_add(args)
@@ -51,7 +51,7 @@ class MultiRootWatchTests(unittest.TestCase):
     def test_daemon_uses_one_state_for_all_roots(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
-            roots = [base / "one" / "tenant-flex", base / "two" / "tenant-flex-2"]
+            roots = [base / "one" / "demo-project", base / "two" / "demo-project-2"]
             for root in roots:
                 root.mkdir(parents=True)
             created_roots = []
@@ -89,10 +89,10 @@ class MultiRootWatchTests(unittest.TestCase):
             daemon.root = base / "config"
             daemon.global_cfg = {"process_tracking": False}
             daemon.watches = [{
-                "name": "tenant-flex",
+                "name": "demo-project",
                 "root": str(base),
                 "roots": list(map(str, roots)),
-                "project": "tenant-flex",
+                "project": "demo-project",
                 "git": True,
                 "idle_gap_min": 15,
                 "exclude": [],
@@ -123,11 +123,11 @@ class ReportTimeOwnershipTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             broad_root = base / "workspaces"
-            tenant_root = broad_root / "tenant-flex"
-            second_root = base / "orca" / "workspaces" / "tenant-flex-2"
+            demo_root = broad_root / "demo-project"
+            second_root = base / "orca" / "workspaces" / "demo-project-2"
             broad_logs = base / "broad-logs"
             home_logs = base / "home-logs"
-            tenant_logs = base / "tenant-logs"
+            demo_logs = base / "demo-logs"
 
             def write_log(path, rows):
                 path.mkdir(parents=True)
@@ -138,48 +138,48 @@ class ReportTimeOwnershipTests(unittest.TestCase):
 
             write_log(broad_logs, [
                 {"ts": "2026-01-01T00:00:00+00:00", "type": "session_start", "session": 1, "project": "workspaces", "watch": "workspaces"},
-                {"ts": "2026-01-01T00:01:00+00:00", "type": "file", "event": "MODIFIED", "path": "tenant-flex/file", "actor": "unknown"},
-                {"ts": "2026-01-01T00:02:00+00:00", "type": "git_commit", "repo": str(tenant_root), "hash": "abc", "author": "A", "message": "tenant"},
+                {"ts": "2026-01-01T00:01:00+00:00", "type": "file", "event": "MODIFIED", "path": "demo-project/file", "actor": "unknown"},
+                {"ts": "2026-01-01T00:02:00+00:00", "type": "git_commit", "repo": str(demo_root), "hash": "abc", "author": "A", "message": "demo commit"},
                 {"ts": "2026-01-01T00:02:30+00:00", "type": "file", "event": "MODIFIED", "path": "other/file", "actor": "unknown"},
                 {"ts": "2026-01-01T00:03:00+00:00", "type": "session_end", "session": 1, "reason": "idle_gap"},
                 {"ts": "2026-01-01T01:00:00+00:00", "type": "session_start", "session": 2, "project": "workspaces", "watch": "workspaces"},
-                {"ts": "2026-01-01T01:01:00.050000+00:00", "type": "file", "event": "MODIFIED", "path": "tenant-flex/file", "actor": "unknown"},
+                {"ts": "2026-01-01T01:01:00.050000+00:00", "type": "file", "event": "MODIFIED", "path": "demo-project/file", "actor": "unknown"},
                 {"ts": "2026-01-01T01:03:00+00:00", "type": "session_end", "session": 2, "reason": "idle_gap"},
                 {"ts": "2026-01-01T02:00:00+00:00", "type": "session_start", "session": 3, "project": "workspaces", "watch": "workspaces"},
-                {"ts": "2026-01-01T02:01:00+00:00", "type": "file", "event": "MODIFIED", "path": "tenant-flex/parent-only", "actor": "unknown"},
+                {"ts": "2026-01-01T02:01:00+00:00", "type": "file", "event": "MODIFIED", "path": "demo-project/parent-only", "actor": "unknown"},
                 {"ts": "2026-01-01T02:03:00+00:00", "type": "session_end", "session": 3, "reason": "idle_gap"},
             ])
             write_log(home_logs, [
                 {"ts": "2026-01-01T00:00:00+00:00", "type": "session_start", "session": 20, "project": "home", "watch": "home"},
-                {"ts": "2026-01-01T00:01:00.020000+00:00", "type": "file", "event": "MODIFIED", "path": "workspaces/tenant-flex/file", "actor": "unknown"},
+                {"ts": "2026-01-01T00:01:00.020000+00:00", "type": "file", "event": "MODIFIED", "path": "workspaces/demo-project/file", "actor": "unknown"},
                 {"ts": "2026-01-01T00:03:00+00:00", "type": "session_end", "session": 20, "reason": "idle_gap"},
             ])
-            write_log(tenant_logs, [
-                {"ts": "2026-01-01T00:30:00+00:00", "type": "session_start", "session": 10, "project": "tenant-flex", "watch": "tenant-flex"},
-                {"ts": "2026-01-01T00:31:00+00:00", "type": "file", "event": "MODIFIED", "path": "workspaces/tenant-flex/file", "actor": "unknown", "project": "tenant-flex", "watch": "tenant-flex"},
+            write_log(demo_logs, [
+                {"ts": "2026-01-01T00:30:00+00:00", "type": "session_start", "session": 10, "project": "demo-project", "watch": "demo-project"},
+                {"ts": "2026-01-01T00:31:00+00:00", "type": "file", "event": "MODIFIED", "path": "workspaces/demo-project/file", "actor": "unknown", "project": "demo-project", "watch": "demo-project"},
                 {"ts": "2026-01-01T00:40:00+00:00", "type": "session_end", "session": 10, "reason": "idle_gap"},
-                {"ts": "2026-01-01T01:00:00+00:00", "type": "session_start", "session": 11, "project": "tenant-flex", "watch": "tenant-flex"},
-                {"ts": "2026-01-01T01:01:00+00:00", "type": "file", "event": "MODIFIED", "path": "workspaces/tenant-flex/file", "actor": "unknown", "project": "tenant-flex", "watch": "tenant-flex"},
+                {"ts": "2026-01-01T01:00:00+00:00", "type": "session_start", "session": 11, "project": "demo-project", "watch": "demo-project"},
+                {"ts": "2026-01-01T01:01:00+00:00", "type": "file", "event": "MODIFIED", "path": "workspaces/demo-project/file", "actor": "unknown", "project": "demo-project", "watch": "demo-project"},
                 {"ts": "2026-01-01T01:03:00+00:00", "type": "session_end", "session": 11, "reason": "idle_gap"},
-                {"ts": "2026-01-02T00:00:00+00:00", "type": "session_start", "session": 12, "project": "tenant-flex", "watch": "tenant-flex"},
-                {"ts": "2026-01-02T00:01:00+00:00", "type": "file", "event": "MODIFIED", "path": "workspaces/tenant-flex/next-day", "actor": "unknown", "project": "tenant-flex", "watch": "tenant-flex"},
+                {"ts": "2026-01-02T00:00:00+00:00", "type": "session_start", "session": 12, "project": "demo-project", "watch": "demo-project"},
+                {"ts": "2026-01-02T00:01:00+00:00", "type": "file", "event": "MODIFIED", "path": "workspaces/demo-project/next-day", "actor": "unknown", "project": "demo-project", "watch": "demo-project"},
                 {"ts": "2026-01-02T00:02:00+00:00", "type": "session_end", "session": 12, "reason": "idle_gap"},
             ])
             watches = [
                 {"name": "home", "root": str(base), "roots": [str(base)], "project": "home", "log_dir": str(home_logs)},
                 {"name": "workspaces", "root": str(broad_root), "roots": [str(broad_root)], "project": "workspaces", "log_dir": str(broad_logs)},
-                {"name": "tenant-flex", "root": str(base), "roots": [str(tenant_root), str(second_root)], "project": "tenant-flex", "log_dir": str(tenant_logs)},
+                {"name": "demo-project", "root": str(base), "roots": [str(demo_root), str(second_root)], "project": "demo-project", "log_dir": str(demo_logs)},
             ]
 
             events, sessions = sessionizer.load_owned_view(
-                watches, selected="tenant-flex",
+                watches, selected="demo-project",
             )
 
             self.assertEqual(sum(e.get("type") == "file" for e in events), 5)
             self.assertEqual(sum(e.get("type") == "git_commit" for e in events), 1)
             self.assertEqual(len(sessions), 5)
             self.assertEqual(sessionizer.total_active_min(sessions), 20.0)
-            self.assertTrue(all(s["project"] == "tenant-flex" for s in sessions))
+            self.assertTrue(all(s["project"] == "demo-project" for s in sessions))
 
             workspace_events, _ = sessionizer.load_owned_view(
                 watches, selected="workspaces",
@@ -188,12 +188,12 @@ class ReportTimeOwnershipTests(unittest.TestCase):
             self.assertIn("other/file", {e.get("path") for e in workspace_events})
 
             daily = report.daily_report(
-                [], "2026-01-01", watches=watches, selected="tenant-flex",
+                [], "2026-01-01", watches=watches, selected="demo-project",
             )
             self.assertIn("4 sessions", daily)
             exported = json.loads(report.export_json(
                 [], "2026-01-01", "2026-01-01", include_raw=True,
-                watches=watches, selected="tenant-flex",
+                watches=watches, selected="demo-project",
             ))
             self.assertEqual(len(exported["sessions"]), 4)
             self.assertEqual(len(exported["events"]), 13)

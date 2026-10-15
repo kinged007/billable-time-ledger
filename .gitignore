@@ -2,3 +2,12 @@
 __pycache__/
 *.pyc
 *.egg-info/
+.env
+.env.*
+!.env.example
+node_modules/
+dist/
+.next/
+coverage/
+*.log
+.DS_Store
